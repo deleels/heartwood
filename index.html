@@ -1,0 +1,1488 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1F5A43">
+<meta name="description" content="Estimate a tree's age and yearly growth from a photo of its rings. Runs on your device.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Heartwood">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}[hidden]{display:none!important}img{max-width:100%}</style>
+<title>Heartwood</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Young+Serif&family=Figtree:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a field notebook for one instrument. The photo stays in view and the increment-core strip carries the years. */
+:root {
+  --bg: #E9EDE2; --surface: #F7F8F2; --sunk: #DEE3D5; --ink: #18241C; --muted: #566459; --line: #C9D0BF;
+  --accent: #1F5A43; --on-accent: #F4F7EF;
+  --good: #3E7D3A; --average: #9D9A85; --poor: #B5532A; --warn-bg: #F3E8CE; --warn-ink: #5E4610;
+  --s1: #0A74AD; --s2: #C2571A; --s3: #6B4FA0; --s4: #3C8D40;
+  --display: "Young Serif", Georgia, "Times New Roman", serif;
+  --body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --data: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111913; --surface: #1B251E; --sunk: #0C130E; --ink: #E7ECDF; --muted: #9DAA9E; --line: #313D34;
+  --accent: #8AC9A4; --on-accent: #0F1A13;
+  --good: #79B964; --average: #7F8877; --poor: #E08A5A; --warn-bg: #3A2F14; --warn-ink: #F0DDA8;
+  --s1: #2F9BD6; --s2: #DB7434; --s3: #9A7CDA; --s4: #58A85D; color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #111913; --surface: #1B251E; --sunk: #0C130E; --ink: #E7ECDF; --muted: #9DAA9E; --line: #313D34;
+  --accent: #8AC9A4; --on-accent: #0F1A13;
+  --good: #79B964; --average: #7F8877; --poor: #E08A5A; --warn-bg: #3A2F14; --warn-ink: #F0DDA8;
+  --s1: #2F9BD6; --s2: #DB7434; --s3: #9A7CDA; --s4: #58A85D; color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 400 1rem/1.5 var(--body); }
+h1, h2, h3, p { margin: 0; }
+h1, h2 { font-family: var(--display); font-weight: 400; line-height: 1.15; text-wrap: balance; }
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.wrap { max-width: 1120px; margin-inline: auto; width: 100%; }
+.gutter { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+
+header.top { background: var(--bg); border-bottom: 1px solid var(--line); padding-block: 10px; }
+.top-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 10px; font: 400 1.3rem/1 var(--display); }
+.brand svg { width: 28px; height: 28px; color: var(--accent); }
+nav.tabs { display: flex; gap: 4px; }
+nav.tabs a { padding: 8px 12px; min-height: 40px; display: inline-flex; align-items: center; border-radius: 6px; color: var(--muted); text-decoration: none; font-weight: 600; font-size: .95rem; }
+nav.tabs a:hover { color: var(--ink); background: var(--sunk); }
+nav.tabs a[aria-current="page"] { color: var(--on-accent); background: var(--accent); }
+
+main { padding-block: 24px 56px; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 46px; padding: 10px 18px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); font-weight: 600; cursor: pointer; text-decoration: none; color: var(--ink); }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.primary:hover { filter: brightness(1.1); }
+.btn.quiet { background: transparent; }
+.btn[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.btn svg { width: 20px; height: 20px; flex: none; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.muted { color: var(--muted); }
+.small { font-size: .875rem; }
+.eyebrow { font: 500 .75rem/1.3 var(--data); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+
+/* Home */
+.home { display: grid; gap: 32px; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); align-items: start; }
+.home h1 { font-size: clamp(2.1rem, 5.5vw, 3.4rem); max-width: 14ch; }
+.home .lead { margin-top: 14px; max-width: 46ch; font-size: 1.075rem; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.drop { margin-top: 20px; padding: 14px 16px; border: 1px dashed var(--line); border-radius: 6px; color: var(--muted); font-size: .9rem; display: none; }
+.drop.over { border-color: var(--accent); color: var(--ink); background: var(--surface); }
+@media (hover: hover) and (pointer: fine) { .camera-only { display: none !important; } .drop { display: block; } }
+.tips { margin: 26px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; max-width: 52ch; }
+.tips li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; font-size: .95rem; }
+.tips svg { width: 18px; height: 18px; margin-top: 3px; color: var(--accent); }
+.sample { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 12px; min-width: 0; }
+.sample-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.sample canvas { display: block; width: 100%; height: auto; border-radius: 4px; background: var(--sunk); }
+
+/* Result */
+.result { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 28px; align-items: start; }
+.stage-col { position: sticky; top: 12px; display: grid; gap: 10px; min-width: 0; }
+.stage { position: relative; line-height: 0; background: var(--sunk); border-radius: 6px; overflow: hidden; }
+.stage canvas { display: block; width: 100%; height: auto; max-height: 72vh; object-fit: contain; }
+.stage.picking canvas { cursor: crosshair; touch-action: none; }
+.stage-hint { position: absolute; inset: auto 8px 8px 8px; padding: 8px 10px; font-size: .875rem; line-height: 1.35; color: #fff; background: rgba(10, 18, 13, .82); border-radius: 4px; }
+.stage-tools { display: flex; flex-wrap: wrap; gap: 8px; }
+.stage-tools .btn { min-height: 40px; padding: 6px 12px; font-size: .9rem; }
+.data-col { display: grid; gap: 24px; min-width: 0; }
+.age { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+.age-num { font: 400 clamp(3.2rem, 9vw, 5rem)/1 var(--display); font-variant-numeric: tabular-nums; }
+.age-unit { font: 400 1.4rem/1.2 var(--display); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: center; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: .85rem; font-weight: 600; background: var(--sunk); }
+.chip svg { width: 14px; height: 14px; }
+.chip.high svg { color: var(--good); } .chip.medium svg { color: var(--average); } .chip.low svg { color: var(--poor); }
+.note { padding: 10px 12px; background: var(--warn-bg); color: var(--warn-ink); border-radius: 6px; font-size: .925rem; }
+.notes { display: grid; gap: 8px; }
+.panel { display: grid; gap: 10px; min-width: 0; }
+.panel h2 { font-size: 1.25rem; }
+.field-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.field { display: grid; gap: 4px; min-width: 0; flex: 1 1 140px; }
+.field label { font-size: .85rem; font-weight: 600; }
+.field input { min-height: 44px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); width: 100%; }
+.field.year { flex: 0 1 130px; } .field.year input { font-family: var(--data); }
+
+/* Growth chart and core strip */
+.chart { position: relative; touch-action: pan-y; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.chart text { font: 400 11px var(--data); fill: var(--muted); }
+.tip { position: absolute; top: 0; z-index: 2; pointer-events: none; padding: 6px 9px; background: var(--ink); color: var(--bg); border-radius: 4px; font: 400 .78rem/1.35 var(--data); white-space: nowrap; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: .85rem; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 14px; border-radius: 2px; display: inline-grid; place-items: center; font: 700 10px/1 var(--body); font-style: normal; color: #fff; }
+.tally { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.tally div { padding: 8px 10px; background: var(--surface); border-radius: 6px; display: grid; }
+.tally b { font: 400 1.5rem/1.2 var(--display); font-variant-numeric: tabular-nums; }
+details { border-top: 1px solid var(--line); padding-top: 10px; }
+summary { cursor: pointer; font-weight: 600; min-height: 32px; }
+.scroll { overflow-x: auto; max-height: 320px; overflow-y: auto; margin-top: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: .875rem; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-weight: 600; background: var(--bg); position: sticky; top: 0; }
+.decline h1 { font-size: clamp(1.8rem, 5vw, 2.5rem); }
+.progress { height: 6px; border-radius: 3px; background: var(--sunk); overflow: hidden; }
+.progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+@media (prefers-reduced-motion: reduce) { .progress i { transition: none; } }
+
+/* Trees and compare */
+.page-head { display: grid; gap: 6px; margin-bottom: 20px; }
+.page-head h1 { font-size: clamp(1.8rem, 5vw, 2.5rem); }
+.tree-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 12px; }
+.tree { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+.tree img { width: 72px; height: 72px; object-fit: cover; border-radius: 4px; display: block; }
+.tree h3 { font: 400 1.1rem/1.2 var(--display); overflow-wrap: anywhere; }
+.tree-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tree-actions .btn { min-height: 38px; padding: 4px 10px; font-size: .875rem; }
+.empty { padding: 28px 20px; background: var(--surface); border: 1px dashed var(--line); border-radius: 6px; display: grid; gap: 12px; justify-items: start; max-width: 60ch; }
+.picks { display: flex; flex-wrap: wrap; gap: 8px; }
+.pick { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); cursor: pointer; max-width: 100%; overflow-wrap: anywhere; }
+.pick input { width: 18px; height: 18px; accent-color: var(--accent); flex: none; }
+.dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.compare { display: grid; gap: 18px; }
+.yearchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.yearchips span { font: 400 .85rem var(--data); padding: 2px 8px; background: var(--sunk); border-radius: 4px; }
+footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem; max-width: 70ch; }
+@media (max-width: 860px) {
+  .home, .result { grid-template-columns: minmax(0, 1fr); }
+  .stage-col { position: static; }
+  .stage canvas { max-height: 60vh; }
+}
+</style>
+</head><body>
+
+<header class="top gutter">
+  <div class="wrap top-row">
+    <a class="brand" href="#" style="color:inherit;text-decoration:none" aria-label="Heartwood, measure a tree">
+      <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M16 3c7 0 13 5.600 13 13s-6 13-13 13S3 23.400 3 16 9 3 16 3Z"/><path d="M16 8.500c4.300 0 7.500 3.300 7.500 7.500s-3.400 7.500-7.500 7.500-7.500-3.300-7.500-7.500 3.200-7.500 7.500-7.500Z"/><circle cx="16.500" cy="16" r="2.500"/></svg>
+      Heartwood
+    </a>
+    <nav class="tabs" aria-label="Sections">
+      <a href="#" data-tab="measure">Measure</a>
+      <a href="#trees" data-tab="trees">My trees</a>
+      <a href="#compare" data-tab="compare">Compare</a>
+    </nav>
+  </div>
+</header>
+<main class="gutter"><div class="wrap" id="view"></div></main>
+<input id="file-camera" class="vh" type="file" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true">
+<input id="file-library" class="vh" type="file" accept="image/*" tabindex="-1" aria-hidden="true">
+<script id="engine-src">
+/* Heartwood ring engine. Pure JS, no DOM: analyze(rgba, w, h, opts) -> result.
+   Pipeline: wood mask -> pith from ring orientation -> radial wedge profiles ->
+   per-ray counts by 3 methods -> elastic stack of rays -> consensus + yearly curve. */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.RingEngine = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  /* ---------- small numeric helpers ---------- */
+  const TUNE = { sig: 0.08, merge: 0.3, prom: 0.15, floor: 0.3 };
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  function quantile(arr, q) {
+    if (!arr.length) return NaN;
+    const s = Array.from(arr).sort((a, b) => a - b);
+    const p = clamp(q, 0, 1) * (s.length - 1), i = Math.floor(p), f = p - i;
+    return i + 1 < s.length ? s[i] * (1 - f) + s[i + 1] * f : s[i];
+  }
+  const median = (a) => quantile(a, 0.5);
+  function gaussKernel(sigma) {
+    const r = Math.max(1, Math.ceil(sigma * 3)), k = new Float32Array(2 * r + 1);
+    let sum = 0;
+    for (let i = -r; i <= r; i++) { k[i + r] = Math.exp(-(i * i) / (2 * sigma * sigma)); sum += k[i + r]; }
+    for (let i = 0; i < k.length; i++) k[i] /= sum;
+    return { k, r };
+  }
+  /* Edge-renormalised 1D Gaussian, so profile ends do not ring. */
+  function gauss1D(a, sigma) {
+    const { k, r } = gaussKernel(sigma), n = a.length, out = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      let s = 0, w = 0;
+      const lo = Math.max(0, i - r), hi = Math.min(n - 1, i + r);
+      for (let j = lo; j <= hi; j++) { const kv = k[j - i + r]; s += a[j] * kv; w += kv; }
+      out[i] = s / w;
+    }
+    return out;
+  }
+  function blur2D(src, w, h, sigma) {
+    const { k, r } = gaussKernel(sigma), tmp = new Float32Array(w * h), out = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let s = 0, ws = 0;
+      for (let d = -r; d <= r; d++) { const xx = x + d; if (xx < 0 || xx >= w) continue; const kv = k[d + r]; s += src[y * w + xx] * kv; ws += kv; }
+      tmp[y * w + x] = s / ws;
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let s = 0, ws = 0;
+      for (let d = -r; d <= r; d++) { const yy = y + d; if (yy < 0 || yy >= h) continue; const kv = k[d + r]; s += tmp[yy * w + x] * kv; ws += kv; }
+      out[y * w + x] = s / ws;
+    }
+    return out;
+  }
+  function boxDown(src, w, h, f) {
+    const nw = Math.max(1, Math.floor(w / f)), nh = Math.max(1, Math.floor(h / f)), out = new Float32Array(nw * nh);
+    for (let y = 0; y < nh; y++) for (let x = 0; x < nw; x++) {
+      const x0 = Math.floor(x * f), x1 = Math.min(w, Math.floor((x + 1) * f)), y0 = Math.floor(y * f), y1 = Math.min(h, Math.floor((y + 1) * f));
+      let s = 0, c = 0;
+      for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) { s += src[yy * w + xx]; c++; }
+      out[y * nw + x] = c ? s / c : 0;
+    }
+    return { data: out, w: nw, h: nh };
+  }
+  const colorDist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+  /* ---------- wood mask ---------- */
+  function segmentWood(rgba, w, h, keep) {
+    const f = Math.max(1, Math.max(w, h) / 256);
+    const lw = Math.max(1, Math.floor(w / f)), lh = Math.max(1, Math.floor(h / f)), n = lw * lh;
+    const R = new Float32Array(n), G = new Float32Array(n), B = new Float32Array(n);
+    for (let y = 0; y < lh; y++) for (let x = 0; x < lw; x++) {
+      const x0 = Math.floor(x * f), x1 = Math.max(x0 + 1, Math.floor((x + 1) * f)), y0 = Math.floor(y * f), y1 = Math.max(y0 + 1, Math.floor((y + 1) * f));
+      let r = 0, g = 0, b = 0, c = 0;
+      for (let yy = y0; yy < y1 && yy < h; yy++) for (let xx = x0; xx < x1 && xx < w; xx++) {
+        const i = (yy * w + xx) * 4; r += rgba[i]; g += rgba[i + 1]; b += rgba[i + 2]; c++;
+      }
+      const i = y * lw + x; R[i] = r / (c || 1); G[i] = g / (c || 1); B[i] = b / (c || 1);
+    }
+    const centre = [[], [], []], border = [];
+    for (let y = 0; y < lh; y++) for (let x = 0; x < lw; x++) {
+      const i = y * lw + x;
+      if (Math.abs(x - lw / 2) < lw * 0.15 && Math.abs(y - lh / 2) < lh * 0.15) { centre[0].push(R[i]); centre[1].push(G[i]); centre[2].push(B[i]); }
+      if (x < 3 || y < 3 || x >= lw - 3 || y >= lh - 3) border.push([R[i], G[i], B[i]]);
+    }
+    const c = [median(centre[0]), median(centre[1]), median(centre[2])];
+
+    // Up to 3 background colours from the frame border (k-means seeded by luminance).
+    const lum = (p) => 0.3 * p[0] + 0.59 * p[1] + 0.11 * p[2];
+    const sorted = border.slice().sort((a, b) => lum(a) - lum(b));
+    let clusters = [0.17, 0.5, 0.83].map((q) => sorted[Math.floor(q * (sorted.length - 1))].slice());
+    let counts = [0, 0, 0];
+    for (let it = 0; it < 6; it++) {
+      const sum = clusters.map(() => [0, 0, 0]); counts = [0, 0, 0];
+      for (const p of border) {
+        let best = 0, bd = Infinity;
+        clusters.forEach((cl, k) => { const d = colorDist(p, cl); if (d < bd) { bd = d; best = k; } });
+        counts[best]++; sum[best][0] += p[0]; sum[best][1] += p[1]; sum[best][2] += p[2];
+      }
+      clusters = clusters.map((cl, k) => (counts[k] ? [sum[k][0] / counts[k], sum[k][1] / counts[k], sum[k][2] / counts[k]] : cl));
+    }
+    const bg = clusters.filter((cl, k) => counts[k] > border.length * 0.08 && colorDist(cl, c) >= 26 && !(keep || []).some((m) => colorDist(cl, m) < 20));
+
+    const full = () => ({ data: new Uint8Array(n).fill(1), w: lw, h: lh, scale: f, fullFrame: true, centreColor: c, bg: [] });
+    if (!bg.length) return full();
+
+    const cand = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const p = [R[i], G[i], B[i]];
+      for (const cl of bg) { if (colorDist(p, cl) < Math.max(18, 0.45 * colorDist(cl, c))) { cand[i] = 1; break; } }
+    }
+    // Flood the background inward from the border.
+    const flooded = new Uint8Array(n), stack = [];
+    for (let x = 0; x < lw; x++) { stack.push(x, (lh - 1) * lw + x); }
+    for (let y = 0; y < lh; y++) { stack.push(y * lw, y * lw + lw - 1); }
+    while (stack.length) {
+      const i = stack.pop();
+      if (flooded[i] || !cand[i]) continue;
+      flooded[i] = 1;
+      const x = i % lw, y = (i - x) / lw;
+      if (x > 0) stack.push(i - 1); if (x < lw - 1) stack.push(i + 1);
+      if (y > 0) stack.push(i - lw); if (y < lh - 1) stack.push(i + lw);
+    }
+    // Morphological opening of the background closes cracks that leak the flood into the wood.
+    const rad = 2, eroded = new Uint8Array(n), opened = new Uint8Array(n);
+    for (let y = 0; y < lh; y++) for (let x = 0; x < lw; x++) {
+      let all = 1;
+      for (let dy = -rad; dy <= rad && all; dy++) for (let dx = -rad; dx <= rad; dx++) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= lw || yy >= lh) continue;
+        if (!flooded[yy * lw + xx]) { all = 0; break; }
+      }
+      eroded[y * lw + x] = all;
+    }
+    for (let y = 0; y < lh; y++) for (let x = 0; x < lw; x++) {
+      if (!eroded[y * lw + x]) continue;
+      for (let dy = -rad; dy <= rad; dy++) for (let dx = -rad; dx <= rad; dx++) {
+        const xx = x + dx, yy = y + dy;
+        if (xx >= 0 && yy >= 0 && xx < lw && yy < lh) opened[yy * lw + xx] = 1;
+      }
+    }
+    // Keep the largest wood component.
+    const label = new Int32Array(n), sizes = [0];
+    let best = 0, bestSize = 0;
+    for (let s = 0; s < n; s++) {
+      if (opened[s] || label[s]) continue;
+      const id = sizes.length; let size = 0; const st = [s]; label[s] = id;
+      while (st.length) {
+        const i = st.pop(); size++;
+        const x = i % lw, y = (i - x) / lw;
+        const push = (j) => { if (!opened[j] && !label[j]) { label[j] = id; st.push(j); } };
+        if (x > 0) push(i - 1); if (x < lw - 1) push(i + 1);
+        if (y > 0) push(i - lw); if (y < lh - 1) push(i + lw);
+      }
+      sizes.push(size);
+      if (size > bestSize) { bestSize = size; best = id; }
+    }
+    if (bestSize < n * 0.12) return full();
+    const data = new Uint8Array(n);
+    for (let i = 0; i < n; i++) data[i] = label[i] === best ? 1 : 0;
+    return { data, w: lw, h: lh, scale: f, fullFrame: false, centreColor: c, bg };
+  }
+
+  /* Share of masked pixels whose colour could plausibly be wood (warm or neutral, not vivid blue/green). */
+  function woodColourShare(rgba, w, h, mask) {
+    let ok = 0, tot = 0;
+    const step = Math.max(1, Math.floor(Math.max(w, h) / 200));
+    for (let y = 0; y < h; y += step) for (let x = 0; x < w; x += step) {
+      if (!maskAt(mask, x, y)) continue;
+      const i = (y * w + x) * 4, r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
+      tot++;
+      if (b <= r + 10 && g <= r + 14) ok++;
+    }
+    return tot ? ok / tot : 0;
+  }
+  function maskAt(mask, x, y) {
+    const lx = Math.floor(x / mask.scale), ly = Math.floor(y / mask.scale);
+    if (lx < 0 || ly < 0 || lx >= mask.w || ly >= mask.h) return false;
+    return mask.data[ly * mask.w + lx] === 1;
+  }
+
+  /* ---------- pith from ring orientation ---------- */
+  function orientationField(gray, w, h, mask, T, maxDim) {
+    T = T || 12;
+    const f = Math.max(1, Math.max(w, h) / (maxDim || 640));
+    const small = boxDown(gray, w, h, f);
+    const g = blur2D(small.data, small.w, small.h, 1.2), sw = small.w, sh = small.h;
+    const tiles = [];
+    for (let ty = 0; ty + T < sh; ty += T) for (let tx = 0; tx + T < sw; tx += T) {
+      const cx = tx + T / 2, cy = ty + T / 2;
+      if (!maskAt(mask, cx * f, cy * f)) continue;
+      let jxx = 0, jyy = 0, jxy = 0;
+      for (let y = Math.max(1, ty); y < ty + T && y < sh - 1; y++) for (let x = Math.max(1, tx); x < tx + T && x < sw - 1; x++) {
+        const i = y * sw + x, gx = g[i + 1] - g[i - 1], gy = g[i + sw] - g[i - sw];
+        jxx += gx * gx; jyy += gy * gy; jxy += gx * gy;
+      }
+      const tr = jxx + jyy;
+      if (tr < 1e-3) continue;
+      const coh = Math.hypot(jxx - jyy, 2 * jxy) / tr;
+      tiles.push({ x: cx, y: cy, theta: 0.5 * Math.atan2(2 * jxy, jxx - jyy), coh, energy: tr });
+    }
+    const med = median(tiles.map((t) => t.energy)) || 1;
+    for (const t of tiles) t.w = t.coh * t.coh * Math.min(1, Math.sqrt(t.energy / med));
+    return { tiles, f, sw, sh };
+  }
+  function locatePith(field) {
+    const { tiles, sw, sh } = field;
+    const G = 4, gw = Math.ceil(sw / G), gh = Math.ceil(sh / G), acc = new Float32Array(gw * gh);
+    for (const t of tiles) {
+      if (t.w < 0.02) continue;
+      const dx = Math.cos(t.theta), dy = Math.sin(t.theta);
+      for (let sgn = -1; sgn <= 1; sgn += 2) {
+        for (let s = 0; s < sw + sh; s += 2) {
+          const x = t.x + sgn * s * dx, y = t.y + sgn * s * dy;
+          if (x < 0 || y < 0 || x >= sw || y >= sh) break;
+          acc[Math.floor(y / G) * gw + Math.floor(x / G)] += t.w;
+        }
+      }
+    }
+    const smooth = blur2D(acc, gw, gh, 1.5);
+    let bi = 0;
+    for (let i = 0; i < smooth.length; i++) if (smooth[i] > smooth[bi]) bi = i;
+    let cx = (bi % gw + 0.5) * G, cy = (Math.floor(bi / gw) + 0.5) * G;
+    // Robust least-squares refinement: pith is the point nearest all gradient lines.
+    let scale = Math.max(sw, sh) * 0.12;
+    for (let it = 0; it < 10; it++) {
+      let a = 0, b = 0, c = 0, d = 0, e = 0;
+      for (const t of tiles) {
+        const dx = Math.cos(t.theta), dy = Math.sin(t.theta), nx = -dy, ny = dx;
+        const dist = nx * (t.x - cx) + ny * (t.y - cy);
+        const wt = t.w / (1 + (dist * dist) / (scale * scale));
+        a += wt * nx * nx; b += wt * nx * ny; c += wt * ny * ny;
+        const pr = nx * t.x + ny * t.y;
+        d += wt * nx * pr; e += wt * ny * pr;
+      }
+      const det = a * c - b * b;
+      if (Math.abs(det) < 1e-6) break;
+      cx = (c * d - b * e) / det; cy = (a * e - b * d) / det;
+      scale = Math.max(4, scale * 0.75);
+    }
+    return { x: cx, y: cy };
+  }
+  /* Rings around a real pith are only circular close in, and lean with the tree farther out,
+     so distant tiles bias the first estimate. Zoom in on nearby tiles until the centre settles. */
+  function refinePith(field, start) {
+    let cx = start.x, cy = start.y;
+    const size = Math.max(field.sw, field.sh);
+    for (const frac of [0.32, 0.24, 0.18, 0.13, 0.09, 0.065]) {
+      const R = size * frac;
+      for (let it = 0; it < 6; it++) {
+        let a = 0, b = 0, c = 0, d = 0, e = 0, used = 0;
+        for (const t of field.tiles) {
+          const rho = Math.hypot(t.x - cx, t.y - cy);
+          if (rho > R) continue;
+          const nx = -Math.sin(t.theta), ny = Math.cos(t.theta);
+          const dist = nx * (t.x - cx) + ny * (t.y - cy), sc = 0.35 * R;
+          const wt = (t.w / (1 + (dist * dist) / (sc * sc))) * (1 - rho / R);
+          a += wt * nx * nx; b += wt * nx * ny; c += wt * ny * ny;
+          const pr = nx * t.x + ny * t.y;
+          d += wt * nx * pr; e += wt * ny * pr; used++;
+        }
+        const det = a * c - b * b;
+        if (used < 6 || Math.abs(det) < 1e-6) break;
+        const nx = (c * d - b * e) / det, ny = (a * e - b * d) / det;
+        const step = Math.hypot(nx - cx, ny - cy);
+        if (step > R) break;
+        cx = nx; cy = ny;
+        if (step < 0.5) break;
+      }
+    }
+    return { x: cx, y: cy };
+  }
+  /* How well ring orientation matches circles about a centre, and how flat-board-like the field is. */
+  function fieldStats(field, cx, cy) {
+    let rad = 0, ws = 0, c2 = 0, s2 = 0;
+    for (const t of field.tiles) {
+      const dx = t.x - cx, dy = t.y - cy, rho = Math.hypot(dx, dy);
+      c2 += t.w * Math.cos(2 * t.theta); s2 += t.w * Math.sin(2 * t.theta);
+      if (rho < 6) continue;
+      const phi = t.theta - Math.atan2(dy, dx);
+      rad += t.w * Math.cos(2 * phi); ws += t.w;
+    }
+    const tot = field.tiles.reduce((s, t) => s + t.w, 0) || 1;
+    return { radiality: ws ? rad / ws : 0, parallel: Math.hypot(c2, s2) / tot, coherence: tot / (field.tiles.length || 1) };
+  }
+
+  /* Border colours that carry rings curving around the pith are wood (e.g. pale sapwood filling the frame). */
+  function structuredBackground(rgba, w, h, gray, mask, centre) {
+    if (mask.fullFrame || !mask.bg.length) return [];
+    const all = orientationField(gray, w, h, { data: new Uint8Array(mask.w * mask.h).fill(1), w: mask.w, h: mask.h, scale: mask.scale });
+    const inside = { w: 0, n: 0 }, per = mask.bg.map(() => ({ rad: 0, w: 0, n: 0 }));
+    const cx = centre.x / all.f, cy = centre.y / all.f;
+    for (const t of all.tiles) {
+      const px = Math.min(w - 1, Math.floor(t.x * all.f)), py = Math.min(h - 1, Math.floor(t.y * all.f));
+      if (maskAt(mask, px, py)) { inside.w += t.w; inside.n++; continue; }
+      // The trunk's own outline looks like a ring, so only judge tiles well clear of it.
+      const reach = 24 * all.f;
+      if (maskAt(mask, px + reach, py) || maskAt(mask, px - reach, py) || maskAt(mask, px, py + reach) || maskAt(mask, px, py - reach)) continue;
+      const i = (py * w + px) * 4, col = [rgba[i], rgba[i + 1], rgba[i + 2]];
+      let best = 0, bd = Infinity;
+      mask.bg.forEach((m, k) => { const d = colorDist(col, m); if (d < bd) { bd = d; best = k; } });
+      const rho = Math.hypot(t.x - cx, t.y - cy);
+      if (rho < 6) continue;
+      const q = per[best];
+      q.rad += t.w * Math.cos(2 * (t.theta - Math.atan2(t.y - cy, t.x - cx))); q.w += t.w; q.n++;
+    }
+    const insideMean = inside.w / (inside.n || 1);
+    return mask.bg.filter((_, k) => per[k].n >= 8 && per[k].rad / (per[k].w || 1) > 0.35 && per[k].w / per[k].n > 0.5 * insideMean);
+  }
+
+  /* ---------- 1D ring analysis ---------- */
+  function bandpass(p) {
+    const n = p.length, sl = Math.max(24, 0.1 * n);
+    const lo = gauss1D(p, sl), hp = new Float32Array(n), e = new Float32Array(n);
+    for (let i = 0; i < n; i++) { hp[i] = p[i] - lo[i]; e[i] = hp[i] * hp[i]; }
+    const env = gauss1D(e, sl), out = new Float32Array(n);
+    for (let i = 0; i < n; i++) out[i] = clamp(hp[i] / (Math.sqrt(env[i]) + 0.5), -3, 3);
+    return out;
+  }
+  function firstAcPeak(sig, start, W) {
+    const end = Math.min(sig.length, start + W), L = end - start;
+    if (L < 16) return 0;
+    let mean = 0;
+    for (let i = start; i < end; i++) mean += sig[i];
+    mean /= L;
+    let e0 = 0;
+    for (let i = start; i < end; i++) e0 += (sig[i] - mean) * (sig[i] - mean);
+    if (e0 < 1e-6) return 0;
+    const maxLag = Math.floor(L / 2), ac = new Float32Array(maxLag + 2);
+    for (let lag = 1; lag <= maxLag + 1; lag++) {
+      let s = 0;
+      for (let i = start; i + lag < end; i++) s += (sig[i] - mean) * (sig[i + lag] - mean);
+      ac[lag] = (s / e0) * (L / (L - lag));
+    }
+    let lag = 1;
+    while (lag <= maxLag && ac[lag] > 0.1) lag++;
+    for (; lag <= maxLag; lag++) {
+      if (lag >= 3 && ac[lag] > 0.1 && ac[lag] >= ac[lag - 1] && ac[lag] >= ac[lag + 1]) {
+        const a = ac[lag - 1], b = ac[lag], c = ac[lag + 1], den = a - 2 * b + c;
+        return lag + (den ? clamp((0.5 * (a - c)) / den, -0.5, 0.5) : 0);
+      }
+    }
+    return 0;
+  }
+  /* Local ring period along a profile; 0-free (gaps interpolated). `valid` = share measured directly. */
+  function localPeriod(bp) {
+    const n = bp.length, s = gauss1D(bp, 0.8), step = 16, per = new Float32Array(n), xs = [], ys = [];
+    for (let c = 0; c < n; c += step) {
+      let v = 0;
+      for (const W of [64, 128, 256]) {
+        const st = clamp(c - W / 2, 0, Math.max(0, n - W));
+        v = firstAcPeak(s, st, Math.min(W, n));
+        if (v && v < W / 3) break;
+        if (W < 256) v = 0;
+      }
+      // Autocorrelation can lock onto a multiple when rings are tiny; zero-crossings bound it from above.
+      const zs = clamp(c - 32, 0, Math.max(0, n - 64)), ze = Math.min(n, zs + 64);
+      let zc = 0, state = 0, zr = 0;
+      for (let i = zs; i < ze; i++) zr += s[i] * s[i];
+      zr = 0.4 * Math.sqrt(zr / Math.max(1, ze - zs));
+      for (let i = zs; i < ze; i++) {
+        const nx = s[i] > zr ? 1 : s[i] < -zr ? -1 : state;
+        if (nx !== state && state !== 0) zc++;
+        state = nx;
+      }
+      if (zc >= 4) { const bound = (1.6 * 2 * (ze - zs)) / zc; if (!v || v > bound) v = bound; }
+      if (v) { xs.push(c); ys.push(v); }
+    }
+    if (xs.length < 2) return { per: per.fill(xs.length ? ys[0] : 0), valid: xs.length ? 1 / Math.max(1, n / step) : 0 };
+    const my = ys.map((_, i) => median(ys.slice(Math.max(0, i - 2), i + 3)));
+    let j = 0;
+    for (let i = 0; i < n; i++) {
+      while (j + 1 < xs.length && xs[j + 1] < i) j++;
+      if (i <= xs[0]) per[i] = my[0];
+      else if (i >= xs[xs.length - 1]) per[i] = my[my.length - 1];
+      else { const t = (i - xs[j]) / (xs[j + 1] - xs[j]); per[i] = my[j] * (1 - t) + my[j + 1] * t; }
+    }
+    return { per, valid: xs.length / Math.max(1, Math.ceil(n / step)) };
+  }
+  function adaptiveSmooth(a, per) {
+    const n = a.length, out = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const sg = clamp(TUNE.sig * per[i], 0.7, 14), r = Math.ceil(sg * 2.5);
+      let s = 0, w = 0;
+      for (let j = Math.max(0, i - r); j <= Math.min(n - 1, i + r); j++) {
+        const kv = Math.exp(-((j - i) * (j - i)) / (2 * sg * sg)); s += a[j] * kv; w += kv;
+      }
+      out[i] = s / w;
+    }
+    return out;
+  }
+  function rmsOf(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * a[i]; return Math.sqrt(s / (a.length || 1)); }
+  /* Local extrema of `s` pruned by minimum spacing (from local period) and prominence. */
+  function pickExtrema(s, per, sign) {
+    const n = s.length, r = rmsOf(s) || 1, pts = [];
+    for (let i = 1; i < n - 1; i++) {
+      const v = sign * s[i];
+      if (v <= sign * s[i - 1] && v < sign * s[i + 1] && v < TUNE.floor * r) pts.push(i);
+    }
+    let changed = true;
+    while (changed && pts.length > 1) {
+      changed = false;
+      for (let k = 0; k + 1 < pts.length; k++) {
+        const a = pts[k], b = pts[k + 1], mid = (a + b) >> 1;
+        let top = -Infinity;
+        for (let i = a; i <= b; i++) top = Math.max(top, sign * s[i]);
+        const shallow = Math.max(sign * s[a], sign * s[b]);
+        if (b - a < TUNE.merge * per[mid] || top - shallow < TUNE.prom * r) {
+          pts.splice(sign * s[a] > sign * s[b] ? k : k + 1, 1);
+          changed = true;
+          break;
+        }
+      }
+    }
+    return pts;
+  }
+  /* Rings = boundaries, plus the outermost ring when the leftover span is a real ring. */
+  function ringCount(pts, n, per) {
+    if (!pts.length) return 0;
+    const tail = n - pts[pts.length - 1];
+    return pts.length + (tail > 0.5 * (per[n - 1] || 1) ? 1 : 0);
+  }
+  function analyseProfile(bp) {
+    const { per, valid } = localPeriod(bp), n = bp.length;
+    if (!valid) return { a: 0, b: 0, c: 0, per, valid, minima: [] };
+    let c = 0;
+    for (let i = 0; i < n; i++) c += per[i] > 0 ? 1 / per[i] : 0;
+    const s = adaptiveSmooth(bp, per);
+    const minima = pickExtrema(s, per, 1);
+    const ds = new Float32Array(n);
+    for (let i = 1; i < n - 1; i++) ds[i] = (s[i + 1] - s[i - 1]) / 2;
+    const edges = pickExtrema(ds, per, -1); // sharp dark-to-light steps moving outward
+    return { a: ringCount(minima, n, per), b: ringCount(edges, n, per), c, per, valid, minima, s };
+  }
+
+  /* ---------- radial wedge sampling ---------- */
+  function sampleBilinear(g, w, h, x, y) {
+    if (x < 0 || y < 0 || x >= w - 1 || y >= h - 1) return NaN;
+    const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, i = y0 * w + x0;
+    return (g[i] * (1 - fx) + g[i + 1] * fx) * (1 - fy) + (g[i + w] * (1 - fx) + g[i + w + 1] * fx) * fy;
+  }
+  function castRay(gray, w, h, mask, cx, cy, angle) {
+    const c = Math.cos(angle), s = Math.sin(angle), maxR = Math.hypot(w, h);
+    let len = 0, off = 0, clipped = false;
+    for (let r = 1; r < maxR; r++) {
+      const x = cx + r * c, y = cy + r * s;
+      if (x < 1 || y < 1 || x >= w - 2 || y >= h - 2) { clipped = true; break; }
+      if (!maskAt(mask, x, y)) { if (++off > 10) break; } else { off = 0; len = r; }
+    }
+    if (mask.fullFrame) clipped = true;
+    if (len < 24) return null;
+    const left = new Float32Array(len), right = new Float32Array(len), mean = new Float32Array(len);
+    for (let r = 0; r < len; r++) {
+      const dth = Math.min(2.5 / Math.max(r, 1), 0.1);
+      let sl = 0, nl = 0, sr = 0, nr = 0;
+      for (let k = -4; k <= 4; k++) {
+        const th = angle + k * dth, v = sampleBilinear(gray, w, h, cx + r * Math.cos(th), cy + r * Math.sin(th));
+        if (v !== v) continue;
+        if (k < 0) { sl += v; nl++; } else if (k > 0) { sr += v; nr++; }
+      }
+      left[r] = nl ? sl / nl : 0; right[r] = nr ? sr / nr : 0;
+      mean[r] = (left[r] + right[r]) / 2;
+    }
+    return { angle, len, left, right, mean, clipped };
+  }
+  /* Trim dark bark from the outer end. */
+  function barkTrim(mean, clipped) {
+    const n = mean.length;
+    if (clipped) return n;
+    const sm = gauss1D(mean, Math.max(3, n * 0.012));
+    const woodLevel = median(Array.from(sm.subarray(Math.floor(n * 0.45), Math.floor(n * 0.85))));
+    let end = n;
+    const floor = Math.floor(n * 0.8);
+    while (end > floor && sm[end - 1] < 0.72 * woodLevel) end--;
+    return Math.max(floor, end - Math.floor(n * 0.005));
+  }
+  function corr(a, b) {
+    let sa = 0, sb = 0, sab = 0, n = a.length;
+    for (let i = 0; i < n; i++) { sa += a[i] * a[i]; sb += b[i] * b[i]; sab += a[i] * b[i]; }
+    return sab / (Math.sqrt(sa * sb) + 1e-6);
+  }
+
+  /* ---------- elastic stacking of rays ---------- */
+  function resample(a, L) {
+    const out = new Float32Array(L), n = a.length;
+    for (let i = 0; i < L; i++) {
+      const x = (i * (n - 1)) / Math.max(1, L - 1), i0 = Math.floor(x), f = x - i0;
+      out[i] = i0 + 1 < n ? a[i0] * (1 - f) + a[i0 + 1] * f : a[n - 1];
+    }
+    return out;
+  }
+  /* Band-limited DTW. Returns map[i in ref] = position in sig. */
+  function warpMap(ref, sig, band, penalty) {
+    const n = ref.length, m = 2 * band + 1, INF = 1e12;
+    let prev = new Float64Array(m).fill(INF), cur = new Float64Array(m);
+    const back = new Uint8Array(n * m);
+    for (let i = 0; i < n; i++) {
+      cur.fill(INF);
+      for (let o = 0; o < m; o++) {
+        const j = i + o - band;
+        if (j < 0 || j >= n) continue;
+        const d = ref[i] - sig[j], cost = d * d;
+        if (i === 0 && j === 0) { cur[o] = cost; continue; }
+        let best = INF, mv = 0;
+        if (i > 0 && prev[o] < best) { best = prev[o]; mv = 0; }                                // diag
+        if (i > 0 && o + 1 < m && prev[o + 1] + penalty < best) { best = prev[o + 1] + penalty; mv = 1; } // i-1, same j
+        if (o > 0 && cur[o - 1] + penalty < best) { best = cur[o - 1] + penalty; mv = 2; }        // same i, j-1
+        if (best < INF) { cur[o] = best + cost; back[i * m + o] = mv; }
+      }
+      const t = prev; prev = cur; cur = t;
+    }
+    const map = new Float32Array(n);
+    let i = n - 1, o = band;
+    let guard = 2 * n + m;
+    while (i >= 0 && guard-- > 0) {
+      const j = i + o - band;
+      map[i] = j;
+      const mv = back[i * m + o];
+      if (i === 0 && j <= 0) break;
+      if (mv === 0) i--;
+      else if (mv === 1) { i--; o++; }
+      else o--;
+    }
+    for (let k = 1; k < n; k++) if (map[k] < map[k - 1]) map[k] = map[k - 1];
+    return map;
+  }
+  function stackRays(rays, L) {
+    let ref = rays.reduce((b, r) => (r.q > b.q ? r : b), rays[0]);
+    let refSig = resample(ref.bp, L);
+    const band = Math.ceil(L * 0.07), maps = new Map();
+    for (let pass = 0; pass < 2; pass++) {
+      const sum = new Float32Array(L);
+      for (const r of rays) {
+        const sig = resample(r.bp, L), map = warpMap(refSig, sig, band, 0.35);
+        maps.set(r, map);
+        for (let i = 0; i < L; i++) sum[i] += sig[Math.round(map[i])];
+      }
+      for (let i = 0; i < L; i++) sum[i] /= rays.length;
+      refSig = sum;
+    }
+    return { stack: refSig, maps };
+  }
+
+  /* ---------- yearly growth curve ---------- */
+  function buildYears(boundaries, rays, maps, L, per) {
+    const nb = boundaries.length;
+    if (nb < 2) return [];
+    const edges = [0, ...boundaries];
+    const tail = L - boundaries[nb - 1];
+    if (tail > 0.5 * (per[L - 1] || 1)) edges.push(L - 1);
+    const nYears = edges.length - 1, perRay = [], support = new Float32Array(nYears);
+    for (const r of rays) {
+      const map = maps.get(r), n = r.bp.length, w = new Float32Array(nYears);
+      const pos = edges.map((e) => (map[Math.min(L - 1, e)] / (L - 1)) * r.trimR);
+      for (let y = 0; y < nYears; y++) w[y] = Math.max(0, pos[y + 1] - pos[y]);
+      const mean = w.reduce((a, b) => a + b, 0) / nYears || 1;
+      for (let y = 0; y < nYears; y++) w[y] /= mean;
+      perRay.push(w);
+      for (let y = 0; y < nYears; y++) {
+        const e = edges[y + 1], sigAt = Math.round((map[Math.min(L - 1, e)] / (L - 1)) * (n - 1));
+        let dark = Infinity;
+        for (let d = -2; d <= 2; d++) { const v = r.bp[clamp(sigAt + d, 0, n - 1)]; if (v < dark) dark = v; }
+        if (dark < -0.2) support[y] += 1 / rays.length;
+      }
+    }
+    const years = [];
+    for (let y = 0; y < nYears; y++) {
+      const vals = perRay.map((w) => w[y]), m = median(vals);
+      const mad = median(vals.map((v) => Math.abs(v - m)));
+      const spread = m > 0 ? (1.4826 * mad) / m : 9;
+      const edgeYear = y === nYears - 1 && edges[nYears] === L - 1; // outermost ring may be partial
+      years.push({ i: y, width: m, spread, support: support[y], reliable: spread < 0.55 && support[y] >= 0.4 && !edgeYear });
+    }
+    scoreYears(years);
+    return years;
+  }
+  /* Good/average/poor relative to this tree's own age trend, never as an absolute measure. */
+  function scoreYears(years) {
+    const n = years.length, sg = Math.max(3, n / 8), rel = [];
+    for (let i = 0; i < n; i++) {
+      let s = 0, w = 0;
+      for (let j = 0; j < n; j++) {
+        if (!years[j].reliable) continue;
+        const k = Math.exp(-((i - j) * (i - j)) / (2 * sg * sg));
+        s += years[j].width * k; w += k;
+      }
+      years[i].trend = w ? s / w : years[i].width;
+      years[i].index = years[i].trend ? years[i].width / years[i].trend : 1;
+      if (years[i].reliable) rel.push(years[i].index);
+    }
+    const m = median(rel), sd = 1.4826 * median(rel.map((v) => Math.abs(v - m))) || 0.15;
+    for (const y of years) {
+      if (!y.reliable) { y.score = null; continue; }
+      const z = (y.index - m) / sd;
+      y.score = z > 0.6 ? 'good' : z < -0.6 ? 'poor' : 'average';
+    }
+  }
+
+  /* ---------- top level ---------- */
+  function decline(code, message, extra) {
+    return Object.assign({ ok: false, code, message }, extra);
+  }
+  function analyze(rgba, w, h, opts) {
+    opts = opts || {};
+    const progress = opts.onProgress || function () {};
+    const gray = new Float32Array(w * h);
+    for (let i = 0, j = 0; i < gray.length; i++, j += 4) gray[i] = 0.3 * rgba[j] + 0.59 * rgba[j + 1] + 0.11 * rgba[j + 2];
+
+    progress(0.05, 'Finding the wood');
+    let mask = segmentWood(rgba, w, h);
+
+    progress(0.15, 'Locating the pith');
+    let field = orientationField(gray, w, h, mask);
+    let centre, auto = true;
+    if (opts.center) { centre = { x: opts.center.x, y: opts.center.y }; auto = false; }
+    else if (field.tiles.length >= 12) { const p = locatePith(field); centre = { x: p.x * field.f, y: p.y * field.f }; }
+    else centre = { x: w / 2, y: h / 2 };
+
+    const woodLike = structuredBackground(rgba, w, h, gray, mask, centre);
+    if (woodLike.length) {
+      mask = segmentWood(rgba, w, h, woodLike);
+      field = orientationField(gray, w, h, mask);
+      if (auto && field.tiles.length >= 12) { const p = locatePith(field); centre = { x: p.x * field.f, y: p.y * field.f }; }
+    }
+    if (auto && field.tiles.length >= 12) {
+      const fine = orientationField(gray, w, h, mask, 8, 1000);
+      const p = refinePith(fine, { x: centre.x / fine.f, y: centre.y / fine.f });
+      if (p.x >= 0 && p.y >= 0 && p.x * fine.f < w && p.y * fine.f < h) centre = { x: p.x * fine.f, y: p.y * fine.f };
+    }
+    const colourShare = woodColourShare(rgba, w, h, mask);
+    const inFrame = centre.x >= 0 && centre.y >= 0 && centre.x < w && centre.y < h;
+    const stats = fieldStats(field, centre.x / field.f, centre.y / field.f);
+    const diag = { colourShare, radiality: stats.radiality, parallel: stats.parallel, coherence: stats.coherence, fullFrame: mask.fullFrame };
+    const base = { centre, autoCentre: auto, width: w, height: h, diag };
+
+    if (colourShare < 0.45) return decline('not-wood', "This doesn't look like cut wood. Photograph the flat, cut face of a trunk.", base);
+    if (auto && !inFrame) return decline('no-centre', 'The rings do not curve around a centre in this photo. Include the middle of the trunk, or set the centre yourself.', base);
+    if (stats.parallel > 0.82 && !opts.center) return decline('flat-board', 'The grain runs in one direction, like a plank. Rings need to be visible as circles around the centre.', base);
+    if (stats.radiality < 0.22) return decline('not-rings', 'No circular rings found around a centre. Use a clean, square-on photo of the cut face, or set the centre yourself.', base);
+
+    progress(0.3, 'Measuring along 48 directions');
+    const N = 48, raw = [];
+    for (let k = 0; k < N; k++) {
+      const ray = castRay(gray, w, h, mask, centre.x, centre.y, (k / N) * Math.PI * 2);
+      if (ray) raw.push(ray);
+    }
+    if (raw.length < 8) return decline('too-small', 'Too little of the trunk is visible around the centre. Move back so the whole face fits.', base);
+    const maxLen = Math.max(...raw.map((r) => r.len));
+    const rays = [];
+    for (const r of raw) {
+      if (r.len < 0.35 * maxLen) continue;
+      const end = barkTrim(r.mean, r.clipped);
+      const start = 2;
+      if (end - start < 24) continue;
+      r.trimR = end;
+      r.bp = bandpass(r.mean.subarray(start, end));
+      const bl = bandpass(r.left.subarray(start, end)), br = bandpass(r.right.subarray(start, end));
+      r.q = corr(bl, br);
+      r.res = analyseProfile(r.bp);
+      rays.push(r);
+    }
+    // A real pith has wood on every side. If most directions end almost at once, this is a fragment.
+    const coverage = raw.filter((r) => r.len >= 0.35 * maxLen).length / N;
+    diag.coverage = coverage;
+    if (rays.length < 6) return decline('too-small', 'Too little of the trunk is visible around the centre. Move back so the whole face fits.', base);
+
+    progress(0.55, 'Comparing ring-counting methods');
+    const qMed = median(rays.map((r) => r.q));
+    let use = rays.filter((r) => r.q >= qMed && r.res.valid > 0.15);
+    if (use.length < 6) use = rays.slice().sort((a, b) => b.q - a.q).slice(0, Math.min(rays.length, 12));
+    const qTop = median(use.map((r) => r.q));
+    diag.quality = qTop;
+    diag.usableRays = use.length;
+    if (qTop < 0.18) return decline('unclear', 'The rings are not clear enough to count. Sand or wet the cut face, light it evenly, then try again.', base);
+
+    progress(0.7, 'Lining up rings between directions');
+    const L = Math.round(median(use.map((r) => r.bp.length)));
+    const { stack, maps } = stackRays(use, L);
+    const sRes = analyseProfile(stack);
+
+    const mA = median(use.map((r) => r.res.a)), mB = median(use.map((r) => r.res.b)), mC = median(use.map((r) => r.res.c));
+    const methods = { stacked: sRes.a, darkBands: mA, edges: mB, spacing: Math.round(mC) };
+    // Edge counts split textured wood on real photos, so they only widen the range when they roughly agree.
+    const counts = [sRes.a, mA, mC];
+    if (Math.abs(mB - sRes.a) <= 0.25 * Math.max(sRes.a, 1)) counts.push(mB);
+    const age = sRes.a;
+    diag.methods = methods;
+    const pxPerRing = L / Math.max(1, age);
+    diag.pxPerRing = pxPerRing;
+
+    if (age < 2) return decline('unclear', 'Could not separate individual rings. Try a sharper photo from closer in.', base);
+    const hi = Math.max(...counts), lo = Math.min(...counts);
+    const disagreement = (hi - lo) / Math.max(age, 1);
+    diag.disagreement = disagreement;
+    // Many more sharp edges than counted rings means faint rings were missed (a willow with 35 rings read as 5).
+    const allHi = Math.max(hi, mB), allLo = Math.min(lo, mB);
+    if ((allHi - allLo) / Math.max(age, 1) > 0.6) return decline('disagree', `The counting methods disagree too much to trust a number (${Math.round(allLo)} to ${Math.round(allHi)} rings). Try a sharper, evenly lit photo from closer in.`, base);
+    if (pxPerRing < 3) return decline('too-fine', 'The rings are too fine for this photo. Take a closer or higher-resolution picture.', base);
+
+    progress(0.85, 'Building the growth curve');
+    const rayCounts = use.map((r) => r.res.a);
+    const iqrLo = quantile(rayCounts, 0.25), iqrHi = quantile(rayCounts, 0.75);
+    const low = Math.round(Math.min(age, Math.max(lo, iqrLo))), high = Math.round(Math.max(age, Math.min(hi, iqrHi)));
+    const clippedShare = use.filter((r) => r.clipped).length / use.length;
+    const years = buildYears(sRes.minima, use, maps, L, sRes.per);
+
+    // Traced rings for the overlay: radius of every boundary on every used ray.
+    const edgeR = [];
+    for (const b of sRes.minima) {
+      edgeR.push(use.map((r) => (maps.get(r)[Math.min(L - 1, b)] / (L - 1)) * r.trimR + 2));
+    }
+
+    const spreadScore = 1 - clamp(disagreement / 0.45, 0, 1);
+    const qualScore = clamp((qTop - 0.15) / 0.5, 0, 1);
+    const radScore = clamp((stats.radiality - 0.2) / 0.5, 0, 1);
+    const resScore = clamp((pxPerRing - 3) / 6, 0, 1);
+    const confidence = 0.45 * spreadScore + 0.25 * qualScore + 0.15 * radScore + 0.15 * resScore;
+
+    const outerPer = median(Array.from(sRes.per.subarray(Math.floor(L * 0.66))));
+    diag.outerPer = outerPer;
+    const tooFine = outerPer < 7;
+    let highOut = high, levelOut = confidence >= 0.68 ? 'high' : confidence >= 0.42 ? 'medium' : 'low';
+    if (tooFine) {
+      highOut = Math.max(high, Math.round(age * (1 + ((7 - outerPer) / 7) * 2.5)));
+      levelOut = outerPer < 5 ? 'low' : levelOut === 'high' ? 'medium' : levelOut;
+    }
+    const warnings = [];
+    const partial = coverage < 0.7;
+    if (partial) {
+      levelOut = 'low';
+      warnings.push('The centre of the tree does not seem to be surrounded by wood here, so this may be a fragment. Treat the number as a rough minimum and check the traced rings.');
+    }
+    if (tooFine) warnings.push('The outer rings are only a few pixels wide, so some may be merged and the real age may be higher. A closer photo of the outer edge will help.');
+    if (clippedShare > 0.5) warnings.push('The outer edge is out of frame, so the tree may be older than this.');
+    if (!auto) warnings.push('Using the centre you set by hand.');
+    if (years.length && years.filter((y) => !y.reliable).length > years.length * 0.4) warnings.push('Many years could not be measured reliably, so they appear as gaps.');
+
+    progress(1, 'Done');
+    return Object.assign(base, {
+      ok: true, age, low, high: highOut, confidence, level: levelOut, atLeast: tooFine || partial || clippedShare > 0.5, partial,
+      methods, years, warnings, clipped: clippedShare > 0.5,
+      overlay: { angles: use.map((r) => r.angle), rings: edgeR },
+    });
+  }
+
+  return { analyze, version: 1, TUNE };
+});
+
+</script>
+<script>
+'use strict';
+const $ = (s, r = document) => r.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const view = $('#view');
+const MAX_DIM = 2400, STORE = 'heartwood.trees.v1', THIS_YEAR = new Date().getFullYear();
+const ICON = {
+  camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.500"/></svg>',
+  photo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1"/><circle cx="8.500" cy="9.500" r="1.500"/><path d="m4 18 5-5 3 3 3-4 5 6"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" aria-hidden="true"><path d="m5 13 4 4 10-11"/></svg>',
+  dot: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="7"/></svg>',
+  alert: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3 2 21h20zM11 10h2v6h-2zm0 7h2v2h-2z"/></svg>',
+};
+const SCORE = { good: { label: 'Good', mark: '▲', v: 'var(--good)' }, average: { label: 'Average', mark: '', v: 'var(--average)' }, poor: { label: 'Poor', mark: '▼', v: 'var(--poor)' } };
+const LEVEL = { high: ['High confidence', ICON.check], medium: ['Medium confidence', ICON.dot], low: ['Low confidence', ICON.alert] };
+const SERIES = ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--s4)'];
+
+/* ---------- storage: this device only ---------- */
+function loadTrees() { try { return JSON.parse(localStorage.getItem(STORE)) || []; } catch { return []; } }
+function saveTrees(t) { try { localStorage.setItem(STORE, JSON.stringify(t)); return true; } catch { return false; } }
+function loadCutYear() { try { return Number(localStorage.getItem('heartwood.cut')) || THIS_YEAR; } catch { return THIS_YEAR; } }
+
+/* ---------- engine in a worker, falling back to this thread ---------- */
+function runEngine(image, opts, onProgress) {
+  return new Promise((resolve) => {
+    const fallback = () => setTimeout(() => {
+      resolve(RingEngine.analyze(image.data, image.width, image.height, Object.assign({}, opts)));
+    }, 30);
+    let worker;
+    try {
+      const code = $('#engine-src').textContent + `;self.onmessage=(e)=>{const{d,w,h,o}=e.data;postMessage({done:RingEngine.analyze(d,w,h,Object.assign({},o,{onProgress:(p,m)=>postMessage({p,m})}))})}`;
+      worker = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+    } catch { return fallback(); }
+    worker.onerror = () => { worker.terminate(); fallback(); };
+    worker.onmessage = (e) => {
+      if (e.data.done) { worker.terminate(); resolve(e.data.done); }
+      else if (onProgress) onProgress(e.data.p, e.data.m);
+    };
+    worker.postMessage({ d: image.data, w: image.width, h: image.height, o: opts || {} });
+  });
+}
+
+/* ---------- example disc, drawn here so the app can show itself without a photo ---------- */
+function drawExampleDisc(size) {
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const ctx = c.getContext('2d'), img = ctx.createImageData(size, size), YEARS = 38;
+  let seed = 11; const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+  const w = []; for (let i = 0; i < YEARS; i++) w.push((1.5 * Math.exp(-i / 22) + 0.55) * Math.max(0.45, 1 + 0.32 * Math.sin(i * 0.8) + 0.22 * Math.sin(i * 0.27 + 2) + 0.25 * (rnd() - 0.5)));
+  const tot = w.reduce((a, b) => a + b), cum = [0]; w.forEach((v) => cum.push(cum[cum.length - 1] + v / tot));
+  const cx = size * 0.53, cy = size * 0.47, R = size * 0.4;
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const dx = x - cx, dy = y - cy, th = Math.atan2(dy, dx), u = Math.hypot(dx, dy) / (R * (1 + 0.06 * Math.sin(3 * th + 1) + 0.03 * Math.sin(5 * th)));
+    let col;
+    if (u > 1.06) col = [216, 220, 208];
+    else if (u > 1) col = [66, 47, 34];
+    else {
+      let lo = 0, hi = YEARS; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (cum[m] <= u) lo = m; else hi = m; }
+      const ph = (u - cum[lo]) / (cum[lo + 1] - cum[lo]), v = 1 - 0.42 * Math.pow(ph, 3.5);
+      const base = u < 0.62 ? [182, 130, 82] : [212, 170, 118];
+      col = [base[0] * v, base[1] * v, base[2] * v];
+    }
+    const i = (y * size + x) * 4, n = (rnd() - 0.5) * 12;
+    img.data[i] = col[0] + n; img.data[i + 1] = col[1] + n; img.data[i + 2] = col[2] + n; img.data[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return { canvas: c, image: img };
+}
+
+/* ---------- ring overlay on the photo ---------- */
+function drawStage(canvas, shot, res, opts = {}) {
+  const dw = Math.min(1400, shot.canvas.width), f = dw / shot.canvas.width, dh = Math.round(shot.canvas.height * f);
+  if (canvas.width !== dw || canvas.height !== dh) { canvas.width = dw; canvas.height = dh; }
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(shot.canvas, 0, 0, dw, dh);
+  if (!res) return;
+  const lw = Math.max(1, dw / 700);
+  const cx = res.centre.x * f, cy = res.centre.y * f;
+  if (res.overlay && opts.showRings !== false) {
+    const rays = res.overlay.angles.map((a, k) => ({ a, k })).sort((p, q) => p.a - q.a);
+    res.overlay.rings.forEach((ring, ri) => {
+      const hit = opts.highlight === ri;
+      const pts = rays.map(({ a, k }) => ({ a, x: cx + ring[k] * f * Math.cos(a), y: cy + ring[k] * f * Math.sin(a) }));
+      ctx.beginPath();
+      const closed = pts.length > 2 && (pts[0].a + Math.PI * 2 - pts[pts.length - 1].a) < 1.2;
+      const n = pts.length;
+      // Smooth through midpoints; lift the pen across wide directions with no measurement.
+      for (let i = 0; i < (closed ? n : n - 1); i++) {
+        const p = pts[i], q = pts[(i + 1) % n], gap = i + 1 < n ? q.a - p.a : q.a + Math.PI * 2 - p.a;
+        const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
+        if (i === 0 || gap > 1.2) ctx.moveTo(mx, my);
+        else {
+          const prevGap = p.a - pts[i - 1].a;
+          if (prevGap > 1.2) ctx.moveTo(mx, my); else ctx.quadraticCurveTo(p.x, p.y, mx, my);
+        }
+      }
+      if (closed && n > 1) { const a = pts[0], b = pts[1]; ctx.quadraticCurveTo(a.x, a.y, (a.x + b.x) / 2, (a.y + b.y) / 2); }
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = 'rgba(8,16,12,.55)'; ctx.lineWidth = (hit ? 4 : 2) * lw; ctx.stroke();
+      ctx.strokeStyle = hit ? '#FFE45C' : 'rgba(125,249,230,.9)'; ctx.lineWidth = (hit ? 2.4 : 1) * lw; ctx.stroke();
+    });
+  }
+  const s = 11 * lw;
+  ctx.lineCap = 'round';
+  for (const [col, wd] of [['rgba(8,16,12,.7)', 4.5 * lw], ['#FF3D6E', 2.2 * lw]]) {
+    ctx.strokeStyle = col; ctx.lineWidth = wd; ctx.beginPath();
+    ctx.moveTo(cx - s, cy); ctx.lineTo(cx + s, cy); ctx.moveTo(cx, cy - s); ctx.lineTo(cx, cy + s); ctx.stroke();
+  }
+}
+
+/* ---------- growth chart + core strip, linked by a shared crosshair ---------- */
+const yearLabel = (i, n, cut) => `≈${cut - (n - 1 - i)}`;
+function growthChart(host, years, cut, onHover) {
+  const n = years.length;
+  host.innerHTML = '';
+  const W = Math.max(280, host.clientWidth || 600), H = 212, L = 32, R = 8, T = 10, plotB = 146, stripT = 158, stripB = 186;
+  const x = (i) => L + ((i + 0.5) / n) * (W - L - R);
+  const cell = (W - L - R) / n, gapPx = cell > 4 ? 1 : 0;
+  const vals = years.filter((y) => y.reliable).map((y) => y.width);
+  const maxV = Math.max(1.5, ...vals) * 1.05, yy = (v) => plotB - (v / maxV) * (plotB - T);
+  const tickV = maxV > 3 ? [0, 1, 2, 3] : maxV > 2 ? [0, 1, 2] : [0, 0.5, 1, 1.5];
+  let lines = '', seg = '';
+  for (let i = 0; i < n; i++) {
+    const y = years[i];
+    if (y.reliable) seg += `${seg ? 'L' : 'M'}${x(i).toFixed(1)} ${yy(y.width).toFixed(1)}`;
+    else { if (seg) lines += `<path d="${seg}"/>`; seg = ''; }
+  }
+  if (seg) lines += `<path d="${seg}"/>`;
+  let trend = '';
+  years.forEach((y, i) => { trend += `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${yy(y.trend || 0).toFixed(1)}`; });
+  const step = Math.max(1, Math.ceil(n / Math.max(2, Math.floor((W - L) / 76))));
+  let xt = '';
+  for (let i = n - 1; i >= 0; i -= step) xt += `<text x="${x(i).toFixed(1)}" y="${stripB + 16}" text-anchor="middle">${yearLabel(i, n, cut)}</text>`;
+  const pid = 'hatch' + Math.random().toString(36).slice(2, 7);
+  const strip = years.map((y, i) => {
+    const px = L + (i / n) * (W - L - R), fill = y.reliable && y.score ? SCORE[y.score].v : `url(#${pid})`;
+    return `<rect x="${px.toFixed(2)}" y="${stripT}" width="${Math.max(0.5, cell - gapPx).toFixed(2)}" height="${stripB - stripT}" fill="${fill}"/>`;
+  }).join('');
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Ring width and score for each of ${n} estimated years. The table below lists every value.">
+    <defs><pattern id="${pid}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="var(--sunk)"/><line x1="0" y1="0" x2="0" y2="6" stroke="var(--muted)" stroke-width="1.500"/></pattern></defs>
+    ${tickV.map((v) => `<line x1="${L}" x2="${W - R}" y1="${yy(v)}" y2="${yy(v)}" stroke="var(--line)" stroke-width="1"/><text x="${L - 6}" y="${yy(v) + 4}" text-anchor="end">${v}×</text>`).join('')}
+    <path d="${trend}" fill="none" stroke="var(--muted)" stroke-width="1.500" stroke-dasharray="3 4"/>
+    <g fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">${lines}</g>
+    ${strip}${xt}
+    <line class="cross" x1="0" x2="0" y1="${T}" y2="${stripB}" stroke="var(--ink)" stroke-width="1" visibility="hidden"/>
+  </svg><div class="tip" hidden></div>`;
+  const svg = $('svg', host), cross = $('.cross', host), tip = $('.tip', host);
+  const show = (ev) => {
+    const b = svg.getBoundingClientRect(), px = ev.clientX - b.left;
+    const i = Math.max(0, Math.min(n - 1, Math.floor(((px - L) / (W - L - R)) * n)));
+    const y = years[i];
+    cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('visibility', 'visible');
+    const scoreText = y.reliable && y.score ? `${SCORE[y.score].mark} ${SCORE[y.score].label} · ${y.index.toFixed(2)}× trend` : 'Not reliably measured';
+    tip.innerHTML = `${yearLabel(i, n, cut)} · year ${i + 1}<br>${esc(scoreText)}`;
+    tip.hidden = false;
+    tip.style.left = Math.max(0, Math.min(b.width - tip.offsetWidth, x(i) - tip.offsetWidth / 2)) + 'px';
+    if (onHover) onHover(i);
+  };
+  const hide = () => { cross.setAttribute('visibility', 'hidden'); tip.hidden = true; if (onHover) onHover(null); };
+  svg.addEventListener('pointermove', show);
+  svg.addEventListener('pointerdown', show);
+  svg.addEventListener('pointerleave', hide);
+}
+function observeChart(host, draw) {
+  draw();
+  if (!('ResizeObserver' in window)) return;
+  let last = host.clientWidth;
+  new ResizeObserver(() => { if (host.isConnected && host.clientWidth !== last) { last = host.clientWidth; draw(); } }).observe(host);
+}
+const legendHTML = `<div class="legend" aria-hidden="false">
+  <span><i style="background:var(--good)">▲</i>Good</span><span><i style="background:var(--average)"></i>Average</span><span><i style="background:var(--poor)">▼</i>Poor</span>
+  <span><i style="background:repeating-linear-gradient(45deg,var(--muted) 0 2px,var(--sunk) 2px 5px)"></i>Not measured</span>
+  <span><i style="height:0;border-top:2px dashed var(--muted);border-radius:0"></i>Age trend</span></div>`;
+function tallyHTML(years) {
+  const c = { good: 0, average: 0, poor: 0 };
+  years.forEach((y) => { if (y.reliable && y.score) c[y.score]++; });
+  return `<div class="tally">${Object.keys(c).map((k) => `<div><b>${c[k]}</b><span class="small muted">${SCORE[k].label} years</span></div>`).join('')}</div>`;
+}
+function tableHTML(years, cut) {
+  const n = years.length;
+  const rows = years.map((y, i) => `<tr><td>${yearLabel(i, n, cut)}</td><td>${i + 1}</td><td>${y.reliable ? y.width.toFixed(2) + '×' : '–'}</td><td>${y.reliable && y.score ? SCORE[y.score].label : 'Not measured'}</td></tr>`).reverse().join('');
+  return `<details><summary>All ${n} years as a table</summary><div class="scroll"><table><thead><tr><th scope="col">Year</th><th scope="col">Ring</th><th scope="col">Width vs. average</th><th scope="col">Score</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
+}
+
+/* ---------- views ---------- */
+let current = null; // { shot, res, name, example, saved }
+let stageState = { picking: false, showRings: true, highlight: null };
+
+function setTab(tab) {
+  document.querySelectorAll('nav.tabs a').forEach((a) => {
+    if (a.dataset.tab === tab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  });
+}
+function renderHome() {
+  setTab('measure');
+  current = null;
+  view.innerHTML = `<section class="home">
+    <div>
+      <h1>Read a tree's age from its rings.</h1>
+      <p class="lead">Photograph the cut face of a trunk. Heartwood traces each ring, estimates the age, and shows which years were good for growth.</p>
+      <div class="actions">
+        <button class="btn primary camera-only" id="btn-cam" type="button">${ICON.camera}Take photo</button>
+        <button class="btn" id="btn-lib" type="button">${ICON.photo}Choose photo</button>
+      </div>
+      <div class="drop" id="drop">Or drop a photo anywhere on this page, or paste one.</div>
+      <ul class="tips">
+        <li>${ICON.check}<span>Keep the phone square-on to the cut, with the centre of the tree in frame.</span></li>
+        <li>${ICON.check}<span>Get close enough that each ring is easy to see. Sanding or wetting the wood helps a lot.</span></li>
+        <li>${ICON.check}<span>Use even light, with no hard shadow across the rings.</span></li>
+      </ul>
+      <footer class="fine">Results are estimates. Rings can be missing or doubled in a real tree, so check the traced lines against the wood. Photos are analysed on this device and never uploaded.</footer>
+    </div>
+    <aside class="sample" aria-label="Example result">
+      <div class="sample-head"><span class="eyebrow">Example, not a real tree</span><span class="small muted" id="sample-age">Measuring…</span></div>
+      <canvas id="sample-canvas" width="720" height="720"></canvas>
+      <button class="btn" id="btn-sample" type="button">Open the example result</button>
+    </aside>
+  </section>`;
+  $('#btn-cam').onclick = () => $('#file-camera').click();
+  $('#btn-lib').onclick = () => $('#file-library').click();
+  const ex = getExample(), canvas = $('#sample-canvas');
+  drawStage(canvas, ex.shot, null);
+  ex.ready.then((res) => {
+    if (!canvas.isConnected) return;
+    drawStage(canvas, ex.shot, res);
+    $('#sample-age').textContent = res.ok ? `Estimated ${res.age} years` : '';
+  });
+  $('#btn-sample').onclick = () => ex.ready.then((res) => { current = { shot: ex.shot, res, example: true, name: 'Example disc' }; stageState = { picking: false, showRings: true, highlight: null }; renderResult(); });
+}
+let exampleCache = null;
+function getExample() {
+  if (exampleCache) return exampleCache;
+  const d = drawExampleDisc(720), shot = { canvas: d.canvas, image: d.image };
+  exampleCache = { shot, ready: runEngine(copyImage(d.image), {}) };
+  return exampleCache;
+}
+function copyImage(img) { return { data: new Uint8ClampedArray(img.data), width: img.width, height: img.height }; }
+
+function renderBusy(shot, msg) {
+  setTab('measure');
+  view.innerHTML = `<section class="result"><div class="stage-col"><div class="stage"><canvas id="stage"></canvas></div></div>
+    <div class="data-col panel" aria-live="polite"><span class="eyebrow">Measuring</span><h1 id="busy-msg" style="font-size:1.7rem">${esc(msg)}</h1><div class="progress"><i id="busy-bar"></i></div>
+    <p class="muted small">This happens on your device, so it can take a few seconds on a phone.</p></div></section>`;
+  drawStage($('#stage'), shot, null);
+}
+async function measure(shot, opts, meta) {
+  renderBusy(shot, 'Reading the photo');
+  stageState = { picking: false, showRings: true, highlight: null };
+  const res = await runEngine(copyImage(shot.image), opts, (p, m) => {
+    const b = $('#busy-bar'), t = $('#busy-msg');
+    if (b) b.style.width = Math.round(p * 100) + '%';
+    if (t) t.textContent = m;
+  });
+  current = Object.assign({ shot, res }, meta);
+  renderResult();
+}
+
+async function handleFile(file) {
+  if (!file) return;
+  if (file.type && !file.type.startsWith('image/')) return showFileError('That file is not an image. Choose a JPEG or PNG photo.');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = url; });
+    const f = Math.min(1, MAX_DIM / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * f); c.height = Math.round(img.naturalHeight * f);
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    await measure({ canvas: c, image: ctx.getImageData(0, 0, c.width, c.height) }, {}, { name: (file.name || '').replace(/\.[^.]+$/, '') });
+  } catch {
+    showFileError('This photo could not be opened. HEIC files only open in some browsers, so try a JPEG or PNG copy.');
+  } finally { URL.revokeObjectURL(url); }
+}
+function showFileError(msg) {
+  renderHome();
+  const a = $('.actions');
+  a.insertAdjacentHTML('afterend', `<div class="note" role="alert" style="margin-top:14px">${esc(msg)}</div>`);
+}
+
+function stageTools(canMove) {
+  return `<div class="stage-tools">
+    ${canMove ? `<button class="btn" id="btn-pick" type="button" aria-pressed="${stageState.picking}">Move centre</button>` : ''}
+    ${current.res.overlay ? `<button class="btn" id="btn-rings" type="button" aria-pressed="${stageState.showRings}">Traced rings</button>` : ''}
+    <button class="btn quiet" id="btn-new" type="button">New photo</button>
+  </div>`;
+}
+function bindStage(redraw) {
+  const canvas = $('#stage'), stage = $('.stage');
+  const pick = $('#btn-pick'), rings = $('#btn-rings');
+  if ($('#btn-new')) $('#btn-new').onclick = () => { location.hash = ''; renderHome(); };
+  const hint = $('#stage-hint');
+  if (rings) rings.onclick = () => { stageState.showRings = !stageState.showRings; rings.setAttribute('aria-pressed', stageState.showRings); redraw(); };
+  if (pick) {
+    const syncPick = () => { pick.setAttribute('aria-pressed', stageState.picking); stage.classList.toggle('picking', stageState.picking); hint.hidden = !stageState.picking; };
+    pick.onclick = () => { stageState.picking = !stageState.picking; syncPick(); };
+    canvas.addEventListener('click', (ev) => {
+      if (!stageState.picking) return;
+      const b = canvas.getBoundingClientRect();
+      // The canvas may letterbox inside its box when height is limited.
+      const scale = Math.min(b.width / canvas.width, b.height / canvas.height), ox = (b.width - canvas.width * scale) / 2, oy = (b.height - canvas.height * scale) / 2;
+      const px = (ev.clientX - b.left - ox) / scale, py = (ev.clientY - b.top - oy) / scale, f = current.shot.canvas.width / canvas.width;
+      measure(current.shot, { center: { x: px * f, y: py * f } }, { name: current.name, example: current.example });
+    });
+    syncPick();
+  }
+}
+function renderResult() {
+  setTab('measure');
+  const { res } = current;
+  if (!res.ok) return renderDecline();
+  const cutDefault = current.cut || loadCutYear();
+  const lvl = LEVEL[res.level];
+  view.innerHTML = `<section class="result">
+    <div class="stage-col">
+      <div class="stage"><canvas id="stage" aria-label="Your photo with detected rings traced and the tree centre marked"></canvas><div class="stage-hint" id="stage-hint" hidden>Tap the middle of the tree, where the smallest ring is.</div></div>
+      ${stageTools(true)}
+      <p class="small muted">Red cross: the tree's centre. Lines: the rings counted. If they miss the wood's rings, trust the wood.</p>
+    </div>
+    <div class="data-col">
+      <div>
+        ${current.example ? '<span class="eyebrow">Example, not a real tree</span>' : '<span class="eyebrow">Estimated age</span>'}
+        <div class="age"><span class="age-num">${res.atLeast ? '≥' : '≈'}${res.age}</span><span class="age-unit">years</span></div>
+        <div class="chips">
+          <span class="chip ${res.level}">${lvl[1]}${lvl[0]}</span>
+          <span class="chip" style="font-family:var(--data);font-weight:500">range ${res.low}–${res.high}</span>
+        </div>
+      </div>
+      ${res.warnings.length ? `<div class="notes">${res.warnings.map((w) => `<p class="note">${esc(w)}</p>`).join('')}</div>` : ''}
+      ${res.years.length ? `<div class="panel">
+        <h2>Yearly growth</h2>
+        <div class="field-row"><div class="field year"><label for="cut-year">Cutting year</label><input id="cut-year" type="number" inputmode="numeric" min="1000" max="${THIS_YEAR + 1}" value="${cutDefault}"></div>
+        <p class="small muted" style="flex:1 1 200px">Calendar years count back from here and are approximate. Scores compare each year with this tree's own trend, so they are not a climate record.</p></div>
+        <div class="chart" id="growth"></div>
+        ${legendHTML}
+        ${tallyHTML(res.years)}
+        <div id="year-table"></div>
+      </div>` : ''}
+      <details><summary>How the count was reached</summary>
+        <div class="scroll"><table><tbody>
+          <tr><th scope="row" style="position:static">All directions aligned</th><td>${res.methods.stacked} rings (used)</td></tr>
+          <tr><th scope="row" style="position:static">Dark bands, per direction</th><td>${res.methods.darkBands}</td></tr>
+          <tr><th scope="row" style="position:static">Sharp edges, per direction</th><td>${res.methods.edges}</td></tr>
+          <tr><th scope="row" style="position:static">Ring spacing</th><td>${res.methods.spacing}</td></tr>
+        </tbody></table></div>
+      </details>
+      ${current.example ? '' : `<form class="panel" id="save-form"><h2>Save this tree</h2>
+        <div class="field-row">
+          <div class="field"><label for="tree-name">Name</label><input id="tree-name" maxlength="60" value="${esc(current.name || '')}" placeholder="Old oak by the gate"></div>
+          <div class="field"><label for="tree-place">Place</label><input id="tree-place" maxlength="60" placeholder="North ridge"></div>
+          <button class="btn primary" type="submit">Save tree</button>
+        </div><p class="small muted" id="save-msg" role="status">Saved trees stay on this device. Use them to compare trees from one area.</p></form>`}
+    </div></section>`;
+  const canvas = $('#stage');
+  const redraw = () => drawStage(canvas, current.shot, res, stageState);
+  redraw();
+  bindStage(redraw);
+  const cutInput = $('#cut-year');
+  if (cutInput) {
+    const draw = () => {
+      const cut = Number(cutInput.value) || THIS_YEAR;
+      current.cut = cut;
+      growthChart($('#growth'), res.years, cut, (i) => { stageState.highlight = i; redraw(); });
+      $('#year-table').innerHTML = tableHTML(res.years, cut);
+    };
+    cutInput.addEventListener('input', () => { draw(); try { localStorage.setItem('heartwood.cut', cutInput.value); } catch {} });
+    observeChart($('#growth'), draw);
+  }
+  const form = $('#save-form');
+  if (form) form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const trees = loadTrees();
+    const name = $('#tree-name').value.trim() || `Tree ${trees.length + 1}`;
+    trees.unshift({
+      id: Date.now().toString(36), name, place: $('#tree-place').value.trim(), cut: current.cut || THIS_YEAR,
+      age: res.age, low: res.low, high: res.high, level: res.level, atLeast: !!res.atLeast, saved: new Date().toISOString(),
+      thumb: makeThumb(current.shot, res),
+      years: res.years.map((y) => ({ width: +y.width.toFixed(3), trend: +(y.trend || 0).toFixed(3), index: +(y.index || 0).toFixed(3), score: y.score, reliable: y.reliable })),
+    });
+    const ok = saveTrees(trees);
+    const msg = $('#save-msg');
+    msg.innerHTML = ok ? `Saved. <a href="#trees">See your trees</a>.` : 'This browser blocked saving here, or its storage is full, so the tree was not saved.';
+  });
+}
+function makeThumb(shot, res) {
+  const size = 144, c = document.createElement('canvas'); c.width = c.height = size;
+  const s = shot.canvas, side = Math.min(s.width, s.height), f = side / size;
+  let sx = res.centre.x - side / 2, sy = res.centre.y - side / 2;
+  sx = Math.max(0, Math.min(s.width - side, sx)); sy = Math.max(0, Math.min(s.height - side, sy));
+  c.getContext('2d').drawImage(s, sx, sy, size * f, size * f, 0, 0, size, size);
+  return c.toDataURL('image/jpeg', 0.7);
+}
+function renderDecline() {
+  const { res } = current;
+  view.innerHTML = `<section class="result decline">
+    <div class="stage-col">
+      <div class="stage"><canvas id="stage" aria-label="Your photo"></canvas><div class="stage-hint" id="stage-hint" hidden>Tap the middle of the tree, where the smallest ring is.</div></div>
+      ${stageTools(res.code !== 'not-wood')}
+    </div>
+    <div class="data-col">
+      <div class="panel"><span class="eyebrow">No age given</span><h1>This photo can't give a trustworthy age.</h1>
+      <p role="alert">${esc(res.message)}</p></div>
+      <ul class="tips" style="margin:0">
+        <li>${ICON.check}<span>Fill the frame with the cut face, and hold the phone parallel to it.</span></li>
+        <li>${ICON.check}<span>Move closer, because each ring needs several pixels. Take a second photo of the outer edge if rings get tiny there.</span></li>
+        <li>${ICON.check}<span>Brush off the sawdust, and wet the wood or sand it. Bright, even light helps too.</span></li>
+      </ul>
+      ${res.code !== 'not-wood' ? '<p class="small muted">If the cross is not on the true centre, choose Move centre and tap the smallest ring.</p>' : ''}
+      <div class="actions" style="margin:0"><button class="btn primary camera-only" id="btn-cam2" type="button">${ICON.camera}Take another</button><button class="btn" id="btn-lib2" type="button">${ICON.photo}Choose another</button></div>
+    </div></section>`;
+  const redraw = () => drawStage($('#stage'), current.shot, res, stageState);
+  redraw();
+  bindStage(redraw);
+  $('#btn-cam2').onclick = () => $('#file-camera').click();
+  $('#btn-lib2').onclick = () => $('#file-library').click();
+}
+
+function renderTrees() {
+  setTab('trees');
+  const trees = loadTrees();
+  const head = `<div class="page-head"><h1>My trees</h1><p class="muted">Saved on this device only.</p></div>`;
+  if (!trees.length) {
+    view.innerHTML = `${head}<div class="empty"><p>Trees you save will appear here with their age and growth curve.</p><a class="btn primary" href="#">Measure a tree</a></div>`;
+    return;
+  }
+  view.innerHTML = `${head}<div class="tree-list">${trees.map((t) => `<article class="tree" data-id="${esc(t.id)}">
+      <img src="${esc(t.thumb)}" alt="">
+      <div style="min-width:0"><h3>${esc(t.name)}</h3>
+        <p class="small muted">${esc(t.place || 'No place set')}, cut ${esc(t.cut)}</p>
+        <p style="font-family:var(--data)">${t.atLeast ? '≥' : '≈'}${esc(t.age)} years <span class="small muted">(${esc(t.low)}–${esc(t.high)}, ${esc(t.level)})</span></p>
+        <div class="tree-actions"><button class="btn" data-act="open" type="button">View</button><button class="btn quiet" data-act="del" type="button">Delete</button></div>
+      </div></article>`).join('')}</div>`;
+  view.querySelectorAll('.tree').forEach((el) => {
+    const id = el.dataset.id;
+    $('[data-act=open]', el).onclick = () => renderSaved(id);
+    const del = $('[data-act=del]', el);
+    del.onclick = () => {
+      if (del.dataset.armed) { saveTrees(loadTrees().filter((t) => t.id !== id)); renderTrees(); return; }
+      del.dataset.armed = '1'; del.textContent = 'Tap again to delete';
+      setTimeout(() => { if (del.isConnected) { delete del.dataset.armed; del.textContent = 'Delete'; } }, 4000);
+    };
+  });
+}
+function renderSaved(id) {
+  const t = loadTrees().find((x) => x.id === id);
+  if (!t) return renderTrees();
+  view.innerHTML = `<div class="page-head"><a href="#trees" class="small">Back to my trees</a><h1>${esc(t.name)}</h1><p class="muted">${esc(t.place || 'No place set')}</p></div>
+    <div class="data-col" style="max-width:760px">
+      <div class="age"><span class="age-num">${t.atLeast ? '≥' : '≈'}${esc(t.age)}</span><span class="age-unit">years</span></div>
+      <div class="chips" style="margin:0"><span class="chip ${esc(t.level)}">${LEVEL[t.level][1]}${LEVEL[t.level][0]}</span><span class="chip" style="font-family:var(--data);font-weight:500">range ${esc(t.low)}–${esc(t.high)}</span></div>
+      <div class="panel"><h2>Yearly growth</h2>
+        <div class="field-row"><div class="field year"><label for="saved-cut">Cutting year</label><input id="saved-cut" type="number" inputmode="numeric" min="1000" max="${THIS_YEAR + 1}" value="${esc(t.cut)}"></div></div>
+        <div class="chart" id="growth"></div>${legendHTML}${tallyHTML(t.years)}<div id="year-table"></div></div>
+    </div>`;
+  const input = $('#saved-cut');
+  const draw = () => {
+    const cut = Number(input.value) || t.cut;
+    growthChart($('#growth'), t.years, cut);
+    $('#year-table').innerHTML = tableHTML(t.years, cut);
+  };
+  input.addEventListener('input', () => {
+    draw();
+    const cut = Number(input.value);
+    if (cut >= 1000 && cut <= THIS_YEAR + 1) { const all = loadTrees(); const r = all.find((x) => x.id === id); if (r) { r.cut = cut; saveTrees(all); } }
+  });
+  observeChart($('#growth'), draw);
+}
+
+let comparePick = null;
+function renderCompare() {
+  setTab('compare');
+  const trees = loadTrees().filter((t) => t.years && t.years.length);
+  const head = `<div class="page-head"><h1>Compare trees</h1><p class="muted" style="max-width:62ch">Trees from one area often share good and poor years. Lines that rise and fall together hint at the local climate.</p></div>`;
+  if (trees.length < 2) {
+    view.innerHTML = `${head}<div class="empty"><p>Save at least two trees to compare them. You have ${trees.length}.</p><a class="btn primary" href="#">Measure a tree</a></div>`;
+    return;
+  }
+  if (!comparePick) comparePick = trees.slice(0, 2).map((t) => t.id);
+  comparePick = comparePick.filter((id) => trees.some((t) => t.id === id));
+  view.innerHTML = `${head}<div class="compare">
+    <fieldset style="border:0;margin:0;padding:0;min-width:0"><legend class="small muted" style="padding:0;margin-bottom:6px">Choose up to 4 trees</legend><div class="picks" id="picks">
+      ${trees.map((t) => `<label class="pick"><input type="checkbox" value="${esc(t.id)}" ${comparePick.includes(t.id) ? 'checked' : ''}><span>${esc(t.name)}</span></label>`).join('')}</div></fieldset>
+    <div class="panel"><div class="legend" id="cmp-legend"></div><div class="chart" id="cmp"></div><p class="small muted">Growth compared with each tree's own trend. 1× is a normal year for that tree. Calendar years are approximate, so a shift of a year or two is possible.</p></div>
+    <div class="panel" id="cmp-find"></div></div>`;
+  const draw = () => drawCompare(trees.filter((t) => comparePick.includes(t.id)).sort((a, b) => comparePick.indexOf(a.id) - comparePick.indexOf(b.id)));
+  $('#picks').addEventListener('change', (e) => {
+    const id = e.target.value;
+    if (e.target.checked) { if (comparePick.length >= 4) { e.target.checked = false; return; } comparePick.push(id); }
+    else comparePick = comparePick.filter((x) => x !== id);
+    draw();
+  });
+  observeChart($('#cmp'), draw);
+}
+function seriesFor(t) {
+  const n = t.years.length, map = new Map();
+  t.years.forEach((y, i) => { if (y.reliable) map.set(t.cut - (n - 1 - i), y); });
+  return map;
+}
+function drawCompare(picked) {
+  const host = $('#cmp'), find = $('#cmp-find');
+  $('#cmp-legend').innerHTML = picked.map((t, k) => `<span><span class="dot" style="background:${SERIES[k]}"></span>${esc(t.name)}</span>`).join('');
+  if (!picked.length) { host.innerHTML = '<p class="muted">Choose a tree to draw it.</p>'; find.innerHTML = ''; return; }
+  const maps = picked.map(seriesFor), all = maps.flatMap((m) => [...m.keys()]);
+  if (!all.length) { host.innerHTML = '<p class="muted">These trees have no reliably measured years.</p>'; find.innerHTML = ''; return; }
+  const y0 = Math.min(...all), y1 = Math.max(...all), span = Math.max(1, y1 - y0);
+  const W = Math.max(280, host.clientWidth || 600), H = 250, L = 34, R = 10, T = 10, B = 26;
+  const x = (y) => L + ((y - y0) / span) * (W - L - R);
+  const vals = maps.flatMap((m) => [...m.values()].map((v) => v.index));
+  const hi = Math.max(1.5, ...vals), yy = (v) => H - B - (v / hi) * (H - B - T);
+  const ticks = hi > 2 ? [0, 1, 2] : [0, 0.5, 1, 1.5];
+  const lines = maps.map((m, k) => {
+    let d = '', prev = null;
+    [...m.keys()].sort((a, b) => a - b).forEach((yr) => { d += `${prev === yr - 1 ? 'L' : 'M'}${x(yr).toFixed(1)} ${yy(m.get(yr).index).toFixed(1)}`; prev = yr; });
+    return `<path d="${d}" fill="none" stroke="${SERIES[k]}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  }).join('');
+  const step = Math.max(1, Math.ceil(span / Math.max(2, Math.floor((W - L) / 70))));
+  let xt = ''; for (let yr = y1; yr >= y0; yr -= step) xt += `<text x="${x(yr).toFixed(1)}" y="${H - 8}" text-anchor="middle">≈${yr}</text>`;
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Growth compared with trend by calendar year for ${picked.length} trees">
+    ${ticks.map((v) => `<line x1="${L}" x2="${W - R}" y1="${yy(v)}" y2="${yy(v)}" stroke="var(--line)"/><text x="${L - 6}" y="${yy(v) + 4}" text-anchor="end">${v}×</text>`).join('')}
+    ${lines}${xt}<line class="cross" y1="${T}" y2="${H - B}" stroke="var(--ink)" visibility="hidden"/></svg><div class="tip" hidden></div>`;
+  const svg = $('svg', host), cross = $('.cross', host), tip = $('.tip', host);
+  const show = (ev) => {
+    const b = svg.getBoundingClientRect(), yr = Math.round(y0 + ((ev.clientX - b.left - L) / (W - L - R)) * span), c = Math.max(y0, Math.min(y1, yr));
+    cross.setAttribute('x1', x(c)); cross.setAttribute('x2', x(c)); cross.setAttribute('visibility', 'visible');
+    tip.innerHTML = `≈${c}` + picked.map((t, k) => { const v = maps[k].get(c); return `<br>${esc(t.name.slice(0, 18))}: ${v ? v.index.toFixed(2) + '×' : 'no data'}`; }).join('');
+    tip.hidden = false;
+    tip.style.left = Math.max(0, Math.min(b.width - tip.offsetWidth, x(c) - tip.offsetWidth / 2)) + 'px';
+  };
+  svg.addEventListener('pointermove', show); svg.addEventListener('pointerdown', show);
+  svg.addEventListener('pointerleave', () => { cross.setAttribute('visibility', 'hidden'); tip.hidden = true; });
+
+  if (picked.length < 2) { find.innerHTML = ''; return; }
+  const shared = { good: [], poor: [] }; let overlap = 0;
+  for (let yr = y0; yr <= y1; yr++) {
+    const here = maps.map((m) => m.get(yr));
+    if (here.some((v) => !v)) continue;
+    overlap++;
+    for (const k of ['good', 'poor']) if (here.every((v) => v.score === k)) shared[k].push(yr);
+  }
+  const chips = (a) => (a.length ? `<div class="yearchips">${a.map((y) => `<span>≈${y}</span>`).join('')}</div>` : '<p class="small muted">None in common.</p>');
+  find.innerHTML = overlap < 5
+    ? '<p class="muted">These trees overlap by fewer than 5 measured years, so there is too little to compare. Check their cutting years.</p>'
+    : `<h2>Shared by ${picked.length === 2 ? 'both' : `all ${picked.length}`} trees</h2><p class="small muted">${overlap} measured years overlap.</p>
+       <h3 style="font-size:1rem;font-weight:600">▲ Good years</h3>${chips(shared.good)}<h3 style="font-size:1rem;font-weight:600">▼ Poor years</h3>${chips(shared.poor)}`;
+}
+
+/* ---------- routing and input ---------- */
+function route() {
+  const h = location.hash.slice(1);
+  if (h === 'trees') renderTrees();
+  else if (h === 'compare') renderCompare();
+  else renderHome();
+}
+window.addEventListener('hashchange', route);
+for (const id of ['file-camera', 'file-library']) {
+  $('#' + id).addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (location.hash) history.replaceState(null, '', location.pathname); handleFile(f); });
+}
+window.addEventListener('dragover', (e) => { e.preventDefault(); const d = $('#drop'); if (d) d.classList.add('over'); });
+window.addEventListener('dragleave', () => { const d = $('#drop'); if (d) d.classList.remove('over'); });
+window.addEventListener('drop', (e) => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); });
+window.addEventListener('paste', (e) => { const f = [...(e.clipboardData?.files || [])].find((x) => x.type.startsWith('image/')); if (f) handleFile(f); });
+window.Heartwood = { handleFile };
+route();
+if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+
+</body></html>
