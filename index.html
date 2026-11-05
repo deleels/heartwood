@@ -482,6 +482,304 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     return mask.bg.filter((_, k) => per[k].n >= 8 && per[k].rad / (per[k].w || 1) > 0.35 && per[k].w / per[k].n > 0.5 * insideMean);
   }
 
+  /* ---------- trunk outline ---------- */
+  /* Circular Gaussian across angle, plain Gaussian across radius, on a nT x nR polar image. */
+  function blurPolar(a, nT, nR, sigT, sigR) {
+    const tk = gaussKernel(sigT), rk = gaussKernel(sigR), tmp = new Float32Array(nT * nR), out = new Float32Array(nT * nR);
+    for (let t = 0; t < nT; t++) for (let r = 0; r < nR; r++) {
+      let s = 0;
+      for (let d = -tk.r; d <= tk.r; d++) s += a[((t + d + nT) % nT) * nR + r] * tk.k[d + tk.r];
+      tmp[t * nR + r] = s;
+    }
+    for (let t = 0; t < nT; t++) for (let r = 0; r < nR; r++) {
+      let s = 0, ws = 0;
+      for (let d = -rk.r; d <= rk.r; d++) { const q = r + d; if (q < 0 || q >= nR) continue; s += tmp[t * nR + q] * rk.k[d + rk.r]; ws += rk.k[d + rk.r]; }
+      out[t * nR + r] = s / ws;
+    }
+    return out;
+  }
+  /* Best closed path r(t) through a score image: slope-limited Viterbi over two turns, keeping the settled second turn. */
+  function closedPath(score, nT, lo, hi, maxStep, penalty) {
+    const nR = lo.length ? Math.max(...hi) + 1 : 0, turns = 2, cols = nT * turns;
+    let prev = new Float64Array(nR), cur = new Float64Array(nR);
+    const back = new Int16Array(cols * nR), INF = -1e15;
+    for (let c = 0; c < cols; c++) {
+      const t = c % nT, pt = (c + nT - 1) % nT;
+      cur.fill(INF);
+      for (let r = lo[t]; r <= hi[t]; r++) {
+        const v = score(t, r);
+        if (c === 0) { cur[r] = v; back[c * nR + r] = r; continue; }
+        let best = INF, from = -1;
+        const a = Math.max(lo[pt], r - maxStep), b = Math.min(hi[pt], r + maxStep);
+        for (let q = a; q <= b; q++) {
+          const d = q - r, val = prev[q] - penalty * d * d;
+          if (val > best) { best = val; from = q; }
+        }
+        // A frame corner can move the allowed range faster than the path may step.
+        if (from < 0) { from = r < lo[pt] ? lo[pt] : hi[pt]; best = prev[from] - penalty * maxStep * maxStep * 2; }
+        cur[r] = best + v; back[c * nR + r] = from;
+      }
+      const sw = prev; prev = cur; cur = sw;
+    }
+    let at = lo[(cols - 1) % nT];
+    for (let r = lo[(cols - 1) % nT]; r <= hi[(cols - 1) % nT]; r++) if (prev[r] > prev[at]) at = r;
+    const path = new Float32Array(nT);
+    for (let c = cols - 1; c >= nT; c--) { path[c % nT] = at; at = back[c * nR + at]; }
+    return path;
+  }
+  function smoothCircular(a, sigma) {
+    const { k, r } = gaussKernel(sigma), n = a.length, out = new Float32Array(n);
+    for (let i = 0; i < n; i++) { let s = 0; for (let d = -r; d <= r; d++) s += a[(i + d + n * 2) % n] * k[d + r]; out[i] = s; }
+    return out;
+  }
+  /* Colour alone cannot separate a trunk from pale bark or a plank table. Inside the trunk the texture runs
+     around the centre and the colour stays close to the wood, so take the closed outline that encloses the
+     most such texture and sits on a strong edge. */
+  function trunkOutline(rgba, gray, w, h, mask, centre) {
+    const f = Math.max(1, Math.max(w, h) / 1200), nT = 180;
+    const small = boxDown(gray, w, h, f), sw = small.w, sh = small.h, g = blur2D(small.data, sw, sh, 1);
+    const chan = [0, 1, 2].map((c) => {
+      const a = new Float32Array(w * h);
+      for (let i = 0; i < a.length; i++) a[i] = rgba[i * 4 + c];
+      return boxDown(a, w, h, f).data;
+    });
+    const cx = centre.x / f, cy = centre.y / f;
+    const limit = new Int32Array(nT), frame = new Int32Array(nT);
+    for (let t = 0; t < nT; t++) {
+      const a = (t / nT) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
+      let off = 0, last = 0, r = 1;
+      for (; ; r++) {
+        const x = cx + r * c, y = cy + r * s;
+        if (x < 1 || y < 1 || x >= sw - 2 || y >= sh - 2) break;
+        if (off <= 10 / f + 2) { if (maskAt(mask, x * f, y * f)) { off = 0; last = r; } else off++; }
+      }
+      frame[t] = r - 1; limit[t] = mask.fullFrame ? r - 1 : Math.min(r - 1, last + 2);
+    }
+    const nR = Math.max(...limit) + 1, rMed = median(Array.from(limit));
+    if (rMed < 24) return null;
+    const er = new Float32Array(nT * nR), et = new Float32Array(nT * nR), lum = new Float32Array(nT * nR);
+    const col = [new Float32Array(nT * nR), new Float32Array(nT * nR), new Float32Array(nT * nR)];
+    for (let t = 0; t < nT; t++) {
+      const a = (t / nT) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
+      for (let r = 1; r <= limit[t]; r++) {
+        const x = cx + r * c, y = cy + r * s, xi = Math.round(x), yi = Math.round(y), i = yi * sw + xi;
+        if (xi < 1 || yi < 1 || xi >= sw - 1 || yi >= sh - 1) continue;
+        const gx = g[i + 1] - g[i - 1], gy = g[i + sw] - g[i - sw], gr = gx * c + gy * s, gt = gy * c - gx * s, k = t * nR + r;
+        er[k] = gr * gr; et[k] = gt * gt; lum[k] = g[i];
+        for (let q = 0; q < 3; q++) col[q][k] = chan[q][i];
+      }
+    }
+    const win = Math.max(3, rMed * 0.012), Er = blurPolar(er, nT, nR, 2, win), Et = blurPolar(et, nT, nR, 2, win);
+    const ring = new Float32Array(nT * nR), energy = new Float32Array(nT * nR), inner = [], innerE = [], ic = [[], [], []];
+    for (let t = 0; t < nT; t++) for (let r = 1; r <= limit[t]; r++) {
+      const k = t * nR + r, tot = Er[k] + Et[k];
+      ring[k] = tot > 1e-6 ? Er[k] / tot : 0.5; energy[k] = tot;
+      if (r > 0.2 * rMed && r < 0.6 * rMed) { inner.push(ring[k]); innerE.push(tot); for (let q = 0; q < 3; q++) ic[q].push(col[q][k]); }
+    }
+    if (inner.length < 100) return null;
+    const ringIn = median(inner), enIn = median(innerE) || 1;
+    if (ringIn < 0.58) return null; // too little ring texture to tell wood from whatever surrounds it
+    const tau = (ringIn + 0.5) / 2, ref = ic.map((a) => median(a));
+    // Compare hue, not brightness: sapwood is much paler than heartwood but still the same wood.
+    const refSum = ref[0] + ref[1] + ref[2] + 1, refR = ref[0] / refSum, refG = ref[1] / refSum, refLum = refSum / 3;
+    const dist = new Float32Array(nT * nR), dIn = [], tang = [];
+    for (let t = 0; t < nT; t++) for (let r = 1; r <= limit[t]; r++) {
+      const k = t * nR + r, sum = col[0][k] + col[1][k] + col[2][k] + 1;
+      const d = 300 * Math.hypot(col[0][k] / sum - refR, col[1][k] / sum - refG) + 60 * Math.max(0, 0.6 - sum / 3 / refLum);
+      dist[k] = d;
+      if (r > 0.2 * rMed && r < 0.6 * rMed) { dIn.push(d); tang.push(Et[k]); }
+    }
+    const spread = Math.max(8, quantile(dIn, 0.9)), roughRef = quantile(tang, 0.75) + 1e-3;
+    const dSm = blurPolar(dist, nT, nR, 1, 1.5), lSm = blurPolar(lum, nT, nR, 1, 1.5);
+    const edgeSc = Math.max(4, rMed * 0.008), edgeUnit = Math.sqrt(enIn) + 2;
+    // Running total of "looks like trunk" along each direction, so the path is rewarded for the area it encloses.
+    const total = new Float32Array(nT * nR), edge = new Float32Array(nT * nR);
+    for (let t = 0; t < nT; t++) {
+      let run = 0;
+      for (let r = 1; r <= limit[t]; r++) {
+        const k = t * nR + r, sure = clamp((energy[k] / enIn - 0.35) / 0.65, 0, 1); // faint texture proves nothing: fine rings blur away too
+        const texture = 2.5 * sure * (ring[k] - tau);
+        const colour = -1.2 * clamp((dSm[k] - spread) / (spread + 12), 0, 1);
+        const rough = -0.7 * sure * clamp(Math.log2((Et[k] + 1e-3) / roughRef) / 2, 0, 1); // bark is rough in every direction
+        run += 0.1 + texture + colour + rough;
+        total[k] = run;
+        const a = Math.max(1, Math.round(r - edgeSc)), b = Math.min(limit[t], Math.round(r + edgeSc));
+        edge[k] = (Math.abs(lSm[t * nR + b] - lSm[t * nR + a]) + 0.6 * Math.abs(dSm[t * nR + b] - dSm[t * nR + a])) / edgeUnit;
+      }
+    }
+    const lo = new Int32Array(nT), hi = new Int32Array(nT), floor = Math.round(0.3 * rMed);
+    for (let t = 0; t < nT; t++) { hi[t] = Math.max(1, limit[t]); lo[t] = Math.min(hi[t], floor); }
+    // A trunk's outline is smooth, so a stiff path rides over the bark's lobes instead of following them.
+    const edgeWeight = Math.max(2, rMed * 0.03), step = Math.max(2, Math.round(rMed * 0.02));
+    const path = closedPath((t, r) => total[t * nR + r] + edgeWeight * Math.min(3, edge[t * nR + r]), nT, lo, hi, step, 2 / step);
+    const smooth = smoothCircular(path, 1.5), radii = new Float32Array(nT), atFrame = new Uint8Array(nT);
+    // Stopping far short of the mask with the same wood colour beyond means rings too fine to see, not an edge.
+    const beyond = [];
+    for (let t = 0; t < nT; t++) for (let r = Math.ceil(path[t]) + 3; r <= limit[t]; r += 3) beyond.push(dSm[t * nR + r]);
+    if (!mask.fullFrame && median(Array.from(path)) < 0.72 * rMed && median(beyond) <= spread + 4) return null;
+    for (let t = 0; t < nT; t++) {
+      radii[t] = Math.min(smooth[t], limit[t]) * f;
+      atFrame[t] = smooth[t] >= frame[t] - 3 ? 1 : 0;
+    }
+    return { radii, atFrame, nT, cx: centre.x, cy: centre.y };
+  }
+  function outlineAt(o, angle) {
+    const p = ((angle / (Math.PI * 2)) % 1 + 1) % 1 * o.nT, i = Math.floor(p), j = (i + 1) % o.nT, q = p - i;
+    return o.radii[i % o.nT] * (1 - q) + o.radii[j] * q;
+  }
+  /* Keep only the part of the mask inside the outline. */
+  function clipMask(mask, o) {
+    const data = new Uint8Array(mask.data.length);
+    for (let y = 0; y < mask.h; y++) for (let x = 0; x < mask.w; x++) {
+      const px = (x + 0.5) * mask.scale - o.cx, py = (y + 0.5) * mask.scale - o.cy;
+      if (mask.data[y * mask.w + x] && Math.hypot(px, py) <= outlineAt(o, Math.atan2(py, px))) data[y * mask.w + x] = 1;
+    }
+    return Object.assign({}, mask, { data });
+  }
+
+  /* ---------- ring contours ---------- */
+  function ringPolar(gray, w, h, centre, outline) {
+    const nT = 180, maxR = Math.ceil(Math.max(...outline.radii)) + 2, pol = new Float32Array(nT * maxR);
+    for (let t = 0; t < nT; t++) {
+      const a = (t / nT) * Math.PI * 2;
+      for (let r = 0; r < maxR; r++) {
+        const dth = Math.min(1.2 / Math.max(r, 1), 0.02);
+        let s = 0, n = 0;
+        for (let k = -3; k <= 3; k++) {
+          const v = sampleBilinear(gray, w, h, centre.x + r * Math.cos(a + k * dth), centre.y + r * Math.sin(a + k * dth));
+          if (v === v) { s += v; n++; }
+        }
+        pol[t * maxR + r] = n ? s / n : 0;
+      }
+    }
+    return { pol, nT, maxR };
+  }
+  /* How much darker than its surroundings each point is, per direction, so lighting and sapwood colour do not steer the search. */
+  function darkLines(P, spacing) {
+    const { pol, nT, maxR } = P, line = new Float32Array(nT * maxR), wide = Math.max(4, 1.5 * spacing);
+    for (let t = 0; t < nT; t++) {
+      const prof = pol.subarray(t * maxR, (t + 1) * maxR), lo = gauss1D(prof, wide), fine = gauss1D(prof, Math.max(0.8, spacing * 0.06));
+      const e = new Float32Array(maxR);
+      for (let r = 0; r < maxR; r++) e[r] = (fine[r] - lo[r]) * (fine[r] - lo[r]);
+      const env = gauss1D(e, wide);
+      for (let r = 0; r < maxR; r++) line[t * maxR + r] = clamp(-(fine[r] - lo[r]) / (Math.sqrt(env[r]) + 0.5), -3, 3);
+    }
+    return line;
+  }
+  /* Rings are continuous closed curves, so follow each dark line around the whole trunk, working outward.
+     A ring's shape is best predicted by the ring just inside it, not the trunk's outline, so each search
+     starts from that ring scaled to the expected size, and stays outside it and inside the outline. */
+  function traceRings(P, line, outline, seeds, spacing) {
+    const { nT, maxR } = P, n = seeds.length, rings = [];
+    const meanOf = (a) => { let v = 0; for (let t = 0; t < nT; t++) v += a[t]; return v / nT; };
+    const targets = seeds.map(meanOf);
+    for (let i = 0; i < n; i++) {
+      const lo = new Int32Array(nT), hi = new Int32Array(nT), inner = i ? rings[i - 1] : null;
+      const innerMean = inner ? meanOf(inner) : 0;
+      const gapIn = i ? Math.max(2, targets[i] - targets[i - 1]) : Math.max(2, targets[0]);
+      const gapOut = i + 1 < n ? Math.max(2, targets[i + 1] - targets[i]) : gapIn;
+      const scale = inner ? Math.max(targets[i], innerMean + 0.6 * gapIn) / Math.max(1, innerMean) : 1;
+      // Outer rings must end up fitting the trunk, so hand over to the outline-shaped seed toward the edge.
+      const fit = Math.pow(targets[i] / Math.max(1, targets[n - 1]), 4);
+      for (let t = 0; t < nT; t++) {
+        const c = inner ? inner[t] * scale * (1 - fit) + seeds[i][t] * fit : seeds[i][t];
+        const edge = Math.floor(outline.radii[t]) - 1, top = Math.max(1, Math.min(edge, maxR - 1));
+        hi[t] = clamp(Math.round(c + 0.45 * gapOut), 1, top);
+        const floor = inner ? inner[t] + Math.max(2, 0.4 * gapIn) : 1;
+        lo[t] = clamp(Math.round(Math.max(c - 0.45 * gapIn, floor)), 1, hi[t]);
+      }
+      const dr = Math.max(1, Math.round(0.25 * (median(Array.from(seeds[i])) || 1) * (2 * Math.PI / nT)));
+      const path = closedPath((t, r) => line[t * maxR + r], nT, lo, hi, dr + 1, 0.12);
+      const sm = smoothCircular(path, 1);
+      rings.push(Float32Array.from(sm, (v, t) => Math.min(v, outline.radii[t] - 1)));
+    }
+    // With every ring roughly placed, let each settle onto its dark line between its two neighbours.
+    for (let i = 0; i < n; i++) {
+      const lo = new Int32Array(nT), hi = new Int32Array(nT), base = smoothCircular(rings[i], 3);
+      const gapIn = i ? Math.max(2, targets[i] - targets[i - 1]) : Math.max(2, targets[0]);
+      const gapOut = i + 1 < n ? Math.max(2, targets[i + 1] - targets[i]) : gapIn;
+      for (let t = 0; t < nT; t++) {
+        const top = i + 1 < n ? rings[i + 1][t] - 2 : Math.floor(outline.radii[t]) - 1, bot = i ? rings[i - 1][t] + 2 : 1;
+        hi[t] = clamp(Math.round(Math.min(base[t] + 0.4 * gapOut, top)), 1, maxR - 1);
+        lo[t] = clamp(Math.round(Math.max(base[t] - 0.4 * gapIn, bot)), 1, hi[t]);
+      }
+      const dr = Math.max(1, Math.round(0.25 * (targets[i] || 1) * (2 * Math.PI / nT)));
+      const path = closedPath((t, r) => line[t * maxR + r], nT, lo, hi, dr + 1, 0.08);
+      rings[i] = Float32Array.from(smoothCircular(path, 1), (v, t) => Math.min(v, outline.radii[t] - 1));
+    }
+    // Smoothing can nudge neighbours together, so restore their order working in from the outline.
+    for (let i = n - 2; i >= 0; i--) for (let t = 0; t < nT; t++) rings[i][t] = Math.min(rings[i][t], rings[i + 1][t] - 1);
+    for (let i = 0; i < n; i++) for (let t = 0; t < nT; t++) rings[i][t] = Math.max(rings[i][t], 1 + i * 0.01);
+    return rings;
+  }
+  /* Bend each direction so the traced rings line up, then average every direction into one profile. Faint rings
+     that no single direction shows clearly stand out here, and the mapping back to the photo is exact. */
+  function straighten(P, rings, outline) {
+    const { pol, nT, maxR } = P, n = rings.length, L = Math.round(median(Array.from(outline.radii)));
+    const knots = [0];
+    for (let i = 0; i < n; i++) { let s = 0; for (let t = 0; t < nT; t++) s += rings[i][t]; knots.push(s / nT); }
+    knots.push(L);
+    for (let i = 1; i < knots.length; i++) if (knots[i] <= knots[i - 1]) knots[i] = knots[i - 1] + 0.5;
+    const toPhoto = (x, t) => {
+      let i = 0;
+      while (i + 2 < knots.length && knots[i + 1] <= x) i++;
+      const a = knots[i], b = knots[i + 1], u = (x - a) / Math.max(1e-3, b - a);
+      const ra = i === 0 ? 0 : rings[i - 1][t], rb = i === n ? outline.radii[t] : rings[i][t];
+      return ra + u * (rb - ra);
+    };
+    const stack = new Float32Array(L);
+    for (let x = 0; x < L; x++) {
+      let s = 0;
+      for (let t = 0; t < nT; t++) {
+        const r = clamp(toPhoto(x, t), 0, maxR - 1.001), r0 = Math.floor(r), f = r - r0;
+        s += pol[t * maxR + r0] * (1 - f) + pol[t * maxR + r0 + 1] * f;
+      }
+      stack[x] = s / nT;
+    }
+    return { stack, toPhoto, L };
+  }
+  /* Year widths read directly from the traced rings, so the chart always agrees with the lines on the photo. */
+  function yearsFromRings(rings, outline, line, P, addTail) {
+    const { nT, maxR } = P, n = rings.length, years = [], total = n + (addTail ? 1 : 0);
+    if (n < 2) return years;
+    for (let y = 0; y < total; y++) {
+      const widths = [];
+      let support = 0;
+      for (let t = 0; t < nT; t++) {
+        const a = y === 0 ? 0 : rings[y - 1][t], b = y < n ? rings[y][t] : outline.radii[t];
+        widths.push(Math.max(0, b - a));
+        if (y < n && line[t * maxR + clamp(Math.round(b), 0, maxR - 1)] > 0.2) support++;
+      }
+      const m = median(widths), mad = median(widths.map((v) => Math.abs(v - m)));
+      years.push({ i: y, width: m, spread: m > 0 ? (1.4826 * mad) / m : 9, support: y < n ? support / nT : 0 });
+    }
+    const mean = years.reduce((s, v) => s + v.width, 0) / years.length || 1;
+    for (const v of years) {
+      v.width /= mean;
+      v.reliable = v.spread < 0.55 && v.support >= 0.4 && v.i < n;
+    }
+    scoreYears(years);
+    return years;
+  }
+  /* Rough ring positions at every angle, from the per-ray boundaries: a local median that shrugs off bad rays. */
+  function ringSeeds(edgeR, rayAngles, outline, nT) {
+    const seeds = edgeR.map((vals) => {
+      const u = vals.map((v, k) => v / Math.max(1, outlineAt(outline, rayAngles[k])));
+      const out = new Float32Array(nT);
+      for (let t = 0; t < nT; t++) {
+        const a = (t / nT) * Math.PI * 2, near = [];
+        for (let k = 0; k < u.length; k++) {
+          const d = Math.abs(Math.atan2(Math.sin(rayAngles[k] - a), Math.cos(rayAngles[k] - a)));
+          if (d < 0.6) near.push(u[k]);
+        }
+        out[t] = (near.length ? median(near) : median(u)) * outline.radii[t];
+      }
+      return smoothCircular(out, 3);
+    });
+    for (let i = 1; i < seeds.length; i++) for (let t = 0; t < nT; t++) if (seeds[i][t] < seeds[i - 1][t] + 1) seeds[i][t] = seeds[i - 1][t] + 1;
+    return seeds;
+  }
+
   /* ---------- 1D ring analysis ---------- */
   function bandpass(p) {
     const n = p.length, sl = Math.max(24, 0.1 * n);
@@ -613,15 +911,21 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, i = y0 * w + x0;
     return (g[i] * (1 - fx) + g[i + 1] * fx) * (1 - fy) + (g[i + w] * (1 - fx) + g[i + w + 1] * fx) * fy;
   }
-  function castRay(gray, w, h, mask, cx, cy, angle) {
+  function castRay(gray, w, h, mask, cx, cy, angle, outline) {
     const c = Math.cos(angle), s = Math.sin(angle), maxR = Math.hypot(w, h);
     let len = 0, off = 0, clipped = false;
-    for (let r = 1; r < maxR; r++) {
-      const x = cx + r * c, y = cy + r * s;
-      if (x < 1 || y < 1 || x >= w - 2 || y >= h - 2) { clipped = true; break; }
-      if (!maskAt(mask, x, y)) { if (++off > 10) break; } else { off = 0; len = r; }
+    if (outline) {
+      const p = ((angle / (Math.PI * 2)) % 1 + 1) % 1 * outline.nT;
+      len = Math.floor(outlineAt(outline, angle));
+      clipped = !!outline.atFrame[Math.round(p) % outline.nT];
+    } else {
+      for (let r = 1; r < maxR; r++) {
+        const x = cx + r * c, y = cy + r * s;
+        if (x < 1 || y < 1 || x >= w - 2 || y >= h - 2) { clipped = true; break; }
+        if (!maskAt(mask, x, y)) { if (++off > 10) break; } else { off = 0; len = r; }
+      }
+      if (mask.fullFrame) clipped = true;
     }
-    if (mask.fullFrame) clipped = true;
     if (len < 24) return null;
     const left = new Float32Array(len), right = new Float32Array(len), mean = new Float32Array(len);
     for (let r = 0; r < len; r++) {
@@ -812,10 +1116,26 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     if (stats.parallel > 0.82 && !opts.center) return decline('flat-board', 'The grain runs in one direction, like a plank. Rings need to be visible as circles around the centre.', base);
     if (stats.radiality < 0.22) return decline('not-rings', 'No circular rings found around a centre. Use a clean, square-on photo of the cut face, or set the centre yourself.', base);
 
+    progress(0.25, 'Finding the edge of the trunk');
+    let outline = trunkOutline(rgba, gray, w, h, mask, centre);
+    if (outline && auto) {
+      // The first centre saw bark and background too, so settle it using only the trunk.
+      const inTrunk = clipMask(mask, outline), fine = orientationField(gray, w, h, inTrunk, 8, 1000);
+      if (fine.tiles.length >= 12) {
+        const p = refinePith(fine, { x: centre.x / fine.f, y: centre.y / fine.f });
+        const nx = p.x * fine.f, ny = p.y * fine.f;
+        if (nx >= 0 && ny >= 0 && nx < w && ny < h) {
+          centre = { x: nx, y: ny }; base.centre = centre;
+          outline = trunkOutline(rgba, gray, w, h, mask, centre) || outline;
+        }
+      }
+    }
+    diag.outline = !!outline;
+
     progress(0.3, 'Measuring along 48 directions');
     const N = 48, raw = [];
     for (let k = 0; k < N; k++) {
-      const ray = castRay(gray, w, h, mask, centre.x, centre.y, (k / N) * Math.PI * 2);
+      const ray = castRay(gray, w, h, mask, centre.x, centre.y, (k / N) * Math.PI * 2, outline);
       if (ray) raw.push(ray);
     }
     if (raw.length < 8) return decline('too-small', 'Too little of the trunk is visible around the centre. Move back so the whole face fits.', base);
@@ -823,7 +1143,7 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     const rays = [];
     for (const r of raw) {
       if (r.len < 0.35 * maxLen) continue;
-      const end = barkTrim(r.mean, r.clipped);
+      const end = outline ? r.len : barkTrim(r.mean, r.clipped);
       const start = 2;
       if (end - start < 24) continue;
       r.trimR = end;
@@ -850,7 +1170,30 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     progress(0.7, 'Lining up rings between directions');
     const L = Math.round(median(use.map((r) => r.bp.length)));
     const { stack, maps } = stackRays(use, L);
-    const sRes = analyseProfile(stack);
+    let sRes = analyseProfile(stack);
+
+    // Trace once, line the rings up along those traces, and count again on the much cleaner profile.
+    let traced = null, P = null, line = null;
+    const rawRadii = () => sRes.minima.map((b) => use.map((r) => (maps.get(r)[Math.min(L - 1, b)] / (L - 1)) * r.trimR + 2));
+    if (outline && sRes.minima.length >= 2) {
+      progress(0.76, 'Following each ring around the trunk');
+      P = ringPolar(gray, w, h, centre, outline);
+      const radius = median(Array.from(outline.radii));
+      let spacing = Math.max(4, radius / Math.max(sRes.minima.length, 1));
+      line = darkLines(P, spacing);
+      traced = traceRings(P, line, outline, ringSeeds(rawRadii(), use.map((r) => r.angle), outline, P.nT), spacing);
+      for (let pass = 0; pass < 2; pass++) {
+        const st = straighten(P, traced, outline), res2 = analyseProfile(bandpass(st.stack));
+        const was = traced.length, now = res2.minima.length;
+        if (now <= was || now > 1.6 * was) break; // the cleaner profile may reveal faint rings, never remove traced ones
+        const seeds = res2.minima.map((x) => Float32Array.from({ length: P.nT }, (_, t) => st.toPhoto(x, t)));
+        for (let i = 1; i < seeds.length; i++) for (let t = 0; t < P.nT; t++) if (seeds[i][t] < seeds[i - 1][t] + 1) seeds[i][t] = seeds[i - 1][t] + 1;
+        spacing = Math.max(4, radius / now);
+        line = darkLines(P, spacing);
+        traced = traceRings(P, line, outline, seeds, spacing * 0.8);
+        sRes = res2;
+      }
+    }
 
     const mA = median(use.map((r) => r.res.a)), mB = median(use.map((r) => r.res.b)), mC = median(use.map((r) => r.res.c));
     const methods = { stacked: sRes.a, darkBands: mA, edges: mB, spacing: Math.round(mC) };
@@ -859,7 +1202,7 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     if (Math.abs(mB - sRes.a) <= 0.25 * Math.max(sRes.a, 1)) counts.push(mB);
     const age = sRes.a;
     diag.methods = methods;
-    const pxPerRing = L / Math.max(1, age);
+    const pxPerRing = sRes.per.length / Math.max(1, age);
     diag.pxPerRing = pxPerRing;
 
     if (age < 2) return decline('unclear', 'Could not separate individual rings. Try a sharper photo from closer in.', base);
@@ -876,13 +1219,11 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     const iqrLo = quantile(rayCounts, 0.25), iqrHi = quantile(rayCounts, 0.75);
     const low = Math.round(Math.min(age, Math.max(lo, iqrLo))), high = Math.round(Math.max(age, Math.min(hi, iqrHi)));
     const clippedShare = use.filter((r) => r.clipped).length / use.length;
-    const years = buildYears(sRes.minima, use, maps, L, sRes.per);
+    const years = traced ? yearsFromRings(traced, outline, line, P, age > traced.length) : buildYears(sRes.minima, use, maps, L, sRes.per);
 
-    // Traced rings for the overlay: radius of every boundary on every used ray.
-    const edgeR = [];
-    for (const b of sRes.minima) {
-      edgeR.push(use.map((r) => (maps.get(r)[Math.min(L - 1, b)] / (L - 1)) * r.trimR + 2));
-    }
+    const overlay = traced
+      ? { angles: Array.from({ length: P.nT }, (_, t) => (t / P.nT) * Math.PI * 2), rings: traced.map((r) => Array.from(r)) }
+      : { angles: use.map((r) => r.angle), rings: rawRadii() };
 
     const spreadScore = 1 - clamp(disagreement / 0.45, 0, 1);
     const qualScore = clamp((qTop - 0.15) / 0.5, 0, 1);
@@ -890,7 +1231,7 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     const resScore = clamp((pxPerRing - 3) / 6, 0, 1);
     const confidence = 0.45 * spreadScore + 0.25 * qualScore + 0.15 * radScore + 0.15 * resScore;
 
-    const outerPer = median(Array.from(sRes.per.subarray(Math.floor(L * 0.66))));
+    const outerPer = median(Array.from(sRes.per.subarray(Math.floor(sRes.per.length * 0.66))));
     diag.outerPer = outerPer;
     const tooFine = outerPer < 7;
     let highOut = high, levelOut = confidence >= 0.68 ? 'high' : confidence >= 0.42 ? 'medium' : 'low';
@@ -913,7 +1254,7 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     return Object.assign(base, {
       ok: true, age, low, high: highOut, confidence, level: levelOut, atLeast: tooFine || partial || clippedShare > 0.5, partial,
       methods, years, warnings, clipped: clippedShare > 0.5,
-      overlay: { angles: use.map((r) => r.angle), rings: edgeR },
+      overlay, trunk: outline ? { nT: outline.nT, radii: Array.from(outline.radii) } : null,
     });
   }
 
