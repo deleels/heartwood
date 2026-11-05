@@ -176,8 +176,10 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
 <input id="file-library" class="vh" type="file" accept="image/*" tabindex="-1" aria-hidden="true">
 <script id="engine-src">
 /* Heartwood ring engine. Pure JS, no DOM: analyze(rgba, w, h, opts) -> result.
-   Pipeline: wood mask -> pith from ring orientation -> radial wedge profiles ->
-   per-ray counts by 3 methods -> elastic stack of rays -> consensus + yearly curve. */
+   Pipeline: wood mask -> saw-mark removal -> pith from ring orientation -> radial wedge profiles ->
+   per-ray counts by 3 methods -> elastic stack of rays -> consensus + yearly curve.
+   Saw-mark filter, dirt rejection, pith validity and the count rule follow Norell,
+   Comput. Electron. Agric. 75 (2011) 231-237. Defect types follow Ge et al., Electronics 12 (2023) 3009. */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.RingEngine = factory();
@@ -185,7 +187,7 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
   'use strict';
 
   /* ---------- small numeric helpers ---------- */
-  const TUNE = { sig: 0.08, merge: 0.3, prom: 0.15, floor: 0.3 };
+  const TUNE = { sig: 0.08, merge: 0.3, prom: 0.15, floor: 0.3, sawRatio: 20, sawLift: 2.2, sawWidth: 0.0083, sawSpread: 0.5, pithSpread: 0.12, defectShare: 0.008 };
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
   function quantile(arr, q) {
     if (!arr.length) return NaN;
@@ -237,6 +239,181 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     return { data: out, w: nw, h: nh };
   }
   const colorDist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+  /* ---------- saw marks (Norell 2011, sec. 5.1) ---------- */
+  function fft1(re, im, off, stride, n, inverse, tw) {
+    for (let i = 1, j = 0; i < n; i++) {
+      let bit = n >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) {
+        const a = off + i * stride, b = off + j * stride;
+        let t = re[a]; re[a] = re[b]; re[b] = t;
+        t = im[a]; im[a] = im[b]; im[b] = t;
+      }
+    }
+    for (let len = 2; len <= n; len <<= 1) {
+      const half = len >> 1, step = n / len;
+      for (let i = 0; i < n; i += len) for (let k = 0; k < half; k++) {
+        const wr = tw.c[k * step], wi = inverse ? tw.s[k * step] : -tw.s[k * step];
+        const a = off + (i + k) * stride, b = a + half * stride;
+        const xr = re[b] * wr - im[b] * wi, xi = re[b] * wi + im[b] * wr;
+        re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+      }
+    }
+    if (inverse) for (let i = 0; i < n; i++) { const a = off + i * stride; re[a] /= n; im[a] /= n; }
+  }
+  function twiddles(n) {
+    const c = new Float64Array(n >> 1), s = new Float64Array(n >> 1);
+    for (let i = 0; i < n >> 1; i++) { c[i] = Math.cos((2 * Math.PI * i) / n); s[i] = Math.sin((2 * Math.PI * i) / n); }
+    return { c, s };
+  }
+  function fft2(re, im, nw, nh, inverse) {
+    const tx = twiddles(nw), ty = twiddles(nh);
+    for (let y = 0; y < nh; y++) fft1(re, im, y * nw, 1, nw, inverse, tx);
+    for (let x = 0; x < nw; x++) fft1(re, im, x, nw, nh, inverse, ty);
+  }
+  const nextPow2 = (v) => { let n = 1; while (n < v) n <<= 1; return n; };
+  /* Fade to zero toward the frame and off the wood, so edges do not leave lines of their own in the spectrum. */
+  function sawWindow(w, h, mask, f) {
+    const taper = Math.max(8, Math.max(w, h) / 40), soft = blur2D(Float32Array.from(mask.data), mask.w, mask.h, 2), k = f / mask.scale;
+    const win = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const m = sampleBilinear(soft, mask.w, mask.h, clamp((x + 0.5) * k - 0.5, 0, mask.w - 1.001), clamp((y + 0.5) * k - 0.5, 0, mask.h - 1.001));
+      const b = clamp(Math.min(x, y, w - 1 - x, h - 1 - y) / taper, 0, 1);
+      win[y * w + x] = m * b * b * (3 - 2 * b);
+    }
+    return win;
+  }
+  function spectrum(gray, win, w, h) {
+    const nw = nextPow2(w), nh = nextPow2(h), re = new Float64Array(nw * nh), im = new Float64Array(nw * nh);
+    let s = 0, ws = 0;
+    for (let i = 0; i < w * h; i++) { s += gray[i] * win[i]; ws += win[i]; }
+    const mean = ws ? s / ws : 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) re[y * nw + x] = (gray[y * w + x] - mean) * win[y * w + x];
+    fft2(re, im, nw, nh, false);
+    return { re, im, nw, nh, mean };
+  }
+  /* A saw pattern concentrates energy on one line through the spectrum centre; rings spread theirs evenly.
+     Each radius is judged against its own median, so one threshold holds across images and the 1/f slope does not matter. */
+  function sawDirection(sp) {
+    const { re, im, nw, nh } = sp, A = 180, nR = 160, prof = new Float64Array(A), vals = new Float64Array(A);
+    const lo = 1 / 64, hi = 0.45; // periods of about 2 to 64 pixels; slower variation is lighting and must stay
+    // Smooth the spectrum first (sec. 5.1 uses a Gaussian too): single bins are speckle. Centre it so the blur has no seam.
+    const mag = new Float32Array(nw * nh);
+    for (let y = 0; y < nh; y++) for (let x = 0; x < nw; x++) { const i = y * nw + x; mag[((y + (nh >> 1)) % nh) * nw + ((x + (nw >> 1)) % nw)] = Math.hypot(re[i], im[i]); }
+    const soft = blur2D(mag, nw, nh, 1.5);
+    for (let q = 0; q < nR; q++) {
+      const rho = lo + ((hi - lo) * q) / (nR - 1);
+      for (let a = 0; a < A; a++) {
+        const th = (a / A) * Math.PI;
+        const kx = Math.round(rho * Math.cos(th) * nw) + (nw >> 1), ky = Math.round(rho * Math.sin(th) * nh) + (nh >> 1);
+        vals[a] = soft[clamp(ky, 0, nh - 1) * nw + clamp(kx, 0, nw - 1)];
+      }
+      const m = median(vals) || 1;
+      // Squared so that a narrow saw frequency stands out instead of averaging away over all the radii it does not occupy.
+      for (let a = 0; a < A; a++) { const v = vals[a] / m; prof[a] += Math.min(100, v * v); }
+    }
+    const sm = new Float64Array(A);
+    for (let a = 0; a < A; a++) { const win = []; for (let d = -1; d <= 1; d++) win.push(prof[(a + d + A) % A]); sm[a] = win.reduce((s, v) => s + v, 0) / 3; }
+    let best = 0;
+    for (let a = 0; a < A; a++) if (sm[a] > sm[best]) best = a;
+    const med = median(sm), mad = median(Array.from(sm, (v) => Math.abs(v - med))) || 1e-6;
+    return { angle: (best / A) * Math.PI, ratio: (sm[best] - med) / (1.4826 * mad), lift: sm[best] / (med || 1) };
+  }
+  /* The part of the image lying on the saw line of the spectrum: the stripes alone. */
+  function sawLayer(sp, angle, w, h, win, f) {
+    const { re, im, nw, nh } = sp, c = Math.cos(angle), s = Math.sin(angle), sig = TUNE.sawWidth * f, gap = 1 / 64;
+    for (let ky = 0; ky < nh; ky++) {
+      const fy = (ky > nh / 2 ? ky - nh : ky) / nh;
+      for (let kx = 0; kx < nw; kx++) {
+        const fx = (kx > nw / 2 ? kx - nw : kx) / nw, across = -fx * s + fy * c, along = Math.abs(fx * c + fy * s);
+        const off = clamp((along - gap) / gap, 0, 1); // the line is interrupted at the centre so low frequencies survive
+        const take = off * Math.exp(-(across * across) / (2 * sig * sig)), i = ky * nw + kx;
+        re[i] *= take; im[i] *= take;
+      }
+    }
+    fft2(re, im, nw, nh, true);
+    const out = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (win[y * w + x] > 0) out[y * w + x] = re[y * nw + x];
+    return out;
+  }
+  /* Saw marks cover the face. One crack also makes a spectral line, but all its energy sits in a few places. */
+  function layerSpread(layer, w, h, win) {
+    const T = 32, tiles = [];
+    for (let y = 0; y + T <= h; y += T) for (let x = 0; x + T <= w; x += T) {
+      if (win[(y + (T >> 1)) * w + x + (T >> 1)] < 0.9) continue;
+      let e = 0;
+      for (let yy = y; yy < y + T; yy++) for (let xx = x; xx < x + T; xx++) e += layer[yy * w + xx] * layer[yy * w + xx];
+      tiles.push(e);
+    }
+    if (tiles.length < 10) return 0;
+    tiles.sort((a, b) => b - a);
+    const total = tiles.reduce((s, v) => s + v, 0) || 1, top = Math.ceil(tiles.length * 0.1);
+    return 1 - tiles.slice(0, top).reduce((s, v) => s + v, 0) / total;
+  }
+  /* Everything runs at up to 1024 px: stripes finer than that are finer than any ring we can count,
+     and a phone cannot afford an FFT of a full 2400 px photo. The stripe layer is scaled back up and subtracted. */
+  function removeSawMarks(gray, w, h, mask) {
+    // A whole-number factor keeps every small pixel the same width, so stripes keep their phase when scaled back up.
+    const f = Math.max(1, Math.ceil(Math.max(w, h) / 1024)), small = boxDown(gray, w, h, f), sw = small.w, sh = small.h;
+    const win = sawWindow(sw, sh, mask, f), sp = spectrum(small.data, win, sw, sh), found = sawDirection(sp);
+    const layer = sawLayer(sp, found.angle, sw, sh, win, f);
+    found.spread = layerSpread(layer, sw, sh, win);
+    // The paper filters every image, but on clean wood that removes real rings: a 180-year disc lost 9. Only filter when marks are there.
+    const seen = found.ratio >= TUNE.sawRatio && found.lift >= TUNE.sawLift && found.spread >= TUNE.sawSpread;
+    if (!seen) return { gray, saw: null, probe: found };
+    const out = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const v = sampleBilinear(layer, sw, sh, clamp((x + 0.5) / f - 0.5, 0, sw - 1.001), clamp((y + 0.5) / f - 0.5, 0, sh - 1.001));
+      out[y * w + x] = gray[y * w + x] - v;
+    }
+    return { gray: out, saw: found, probe: found };
+  }
+
+  /* ---------- dirt and holes (Norell 2011, sec. 5.3; defect types from Ge et al. 2023) ---------- */
+  /* Darkness alone cannot mark a defect, since latewood is dark too. But latewood never fills more than a ring,
+     so a very dark run longer than that along a ray must be a hole, crack or mud. */
+  function darkRuns(p, thresh, minRun) {
+    const n = p.length, runs = [];
+    for (let i = 0; i < n; i++) {
+      if (p[i] >= thresh) continue;
+      let j = i;
+      while (j + 1 < n && p[j + 1] < thresh) j++;
+      if (j - i + 1 >= minRun) runs.push([i, j]);
+      i = j;
+    }
+    return runs;
+  }
+  function bridgeRuns(a, runs) {
+    const n = a.length;
+    for (const [i, j] of runs) {
+      const lo = i > 0 ? a[i - 1] : j + 1 < n ? a[j + 1] : 0, hi = j + 1 < n ? a[j + 1] : lo;
+      for (let k = i; k <= j; k++) a[k] = lo + ((hi - lo) * (k - i + 1)) / (j - i + 2);
+    }
+  }
+  /* Fill defects in the polar image from the nearest clean directions at the same radius, so tracing bridges them. */
+  function bridgePolar(P, thresh, minRun) {
+    const { pol, nT, maxR } = P, bad = new Uint8Array(nT * maxR);
+    let any = 0;
+    for (let t = 0; t < nT; t++) for (const [i, j] of darkRuns(pol.subarray(t * maxR, (t + 1) * maxR), thresh, minRun)) {
+      any = 1;
+      for (let r = Math.max(0, i - 1); r <= Math.min(maxR - 1, j + 1); r++) bad[t * maxR + r] = 1;
+    }
+    if (!any) return 0;
+    let filled = 0;
+    const src = pol.slice();
+    for (let r = 0; r < maxR; r++) for (let t = 0; t < nT; t++) {
+      if (!bad[t * maxR + r]) continue;
+      let a = 1, b = 1;
+      while (a < nT && bad[((t - a + nT) % nT) * maxR + r]) a++;
+      while (b < nT && bad[((t + b) % nT) * maxR + r]) b++;
+      if (a >= nT) continue;
+      pol[t * maxR + r] = (src[((t - a + nT) % nT) * maxR + r] * b + src[((t + b) % nT) * maxR + r] * a) / (a + b);
+      filled++;
+    }
+    return filled;
+  }
 
   /* ---------- wood mask ---------- */
   function segmentWood(rgba, w, h, keep) {
@@ -623,6 +800,45 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     }
     return { radii, atFrame, nT, cx: centre.x, cy: centre.y };
   }
+  /* Mud lying on the face stops the outline early, though the trunk carries on beneath it. Bark is dark too, but it is
+     thin and even all round, so only a dark stretch much longer than usual, with something lit beyond it, counts as mud.
+     Dark running out of frame or onto the background proves nothing and is left alone. */
+  function repairOutline(o, gray, w, h, mask) {
+    const { nT, radii, cx, cy } = o, R = median(Array.from(radii)), inner = [];
+    for (let t = 0; t < nT; t += 2) {
+      const a = (t / nT) * Math.PI * 2;
+      for (let q = 0.2; q < 0.8; q += 0.05) { const v = sampleBilinear(gray, w, h, cx + radii[t] * q * Math.cos(a), cy + radii[t] * q * Math.sin(a)); if (v === v) inner.push(v); }
+    }
+    const dark = Math.min(40, 0.45 * median(inner)), ext = new Float32Array(nT), lit = new Uint8Array(nT), step = Math.max(1, R / 300);
+    for (let t = 0; t < nT; t++) {
+      const a = (t / nT) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
+      let r = radii[t], end = r, miss = 0, seen = false;
+      // Walk out while the wedge is dark; a few brighter samples are noise, not the far side. The outline may stop just short of the dark.
+      for (; ; r += step) {
+        let sum = 0, n = 0;
+        for (let k = -2; k <= 2; k++) { const v = sampleBilinear(gray, w, h, cx + r * Math.cos(a + (k * 2) / Math.max(r, 1)), cy + r * Math.sin(a + (k * 2) / Math.max(r, 1))); if (v === v) { sum += v; n++; } }
+        if (!n) { end = -1; break; } // left the frame while still dark
+        if (sum / n < dark) { end = r; miss = 0; seen = true; }
+        else if (++miss * step > (seen ? 0.012 : 0.03) * R) { lit[t] = seen && maskAt(mask, cx + r * c, cy + r * s) ? 1 : 0; break; }
+      }
+      ext[t] = end < 0 ? 0 : end - radii[t];
+    }
+    const thin = quantile(Array.from(ext), 0.25), marked = new Uint8Array(nT), out = Float32Array.from(radii);
+    let count = 0;
+    for (let t = 0; t < nT; t++) if (lit[t] && ext[t] - thin > 0.06 * R) { marked[t] = 1; count++; out[t] = radii[t] + ext[t] - thin; }
+    if (!count) return { outline: o, repaired: 0 };
+    // Where the stiff path was still diving toward the mud it is short too. Close those dips, next to the mud only.
+    const W = 24, closed = Float32Array.from(out), near = new Uint8Array(nT);
+    const rangeAt = (src, t, pick) => { let v = src[t]; for (let d = -W; d <= W; d++) v = pick(v, src[(t + d + nT) % nT]); return v; };
+    const dil = Float32Array.from(out, (_, t) => rangeAt(out, t, Math.max));
+    for (let t = 0; t < nT; t++) {
+      closed[t] = rangeAt(dil, t, Math.min);
+      for (let d = -W; d <= W && !near[t]; d++) if (marked[(t + d + nT) % nT]) near[t] = 1;
+    }
+    for (let t = 0; t < nT; t++) if (near[t] && closed[t] > out[t]) out[t] = closed[t];
+    const smooth = smoothCircular(out, 2);
+    return { outline: Object.assign({}, o, { radii: Float32Array.from(smooth, (v, t) => (near[t] ? v : radii[t])) }), repaired: count };
+  }
   function outlineAt(o, angle) {
     const p = ((angle / (Math.PI * 2)) % 1 + 1) % 1 * o.nT, i = Math.floor(p), j = (i + 1) % o.nT, q = p - i;
     return o.radii[i % o.nT] * (1 - q) + o.radii[j] * q;
@@ -781,9 +997,23 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
   }
 
   /* ---------- 1D ring analysis ---------- */
+  /* Sliding median by a sorted window, in O(n * window). */
+  function runningMedian(p, half) {
+    const n = p.length, out = new Float32Array(n), win = [];
+    const place = (v) => { let lo = 0, hi = win.length; while (lo < hi) { const m = (lo + hi) >> 1; if (win[m] < v) lo = m + 1; else hi = m; } return lo; };
+    let a = 0, b = -1;
+    for (let i = 0; i < n; i++) {
+      const na = Math.max(0, i - half), nb = Math.min(n - 1, i + half);
+      while (b < nb) { b++; win.splice(place(p[b]), 0, p[b]); }
+      while (a < na) { win.splice(place(p[a]), 1); a++; }
+      out[i] = win[win.length >> 1];
+    }
+    return out;
+  }
   function bandpass(p) {
     const n = p.length, sl = Math.max(24, 0.1 * n);
-    const lo = gauss1D(p, sl), hp = new Float32Array(n), e = new Float32Array(n);
+    // A median keeps the jump from dark heartwood to pale sapwood out of the ring signal. A Gaussian smears it over dozens of rings.
+    const lo = gauss1D(runningMedian(p, Math.round(1.25 * sl)), sl / 4), hp = new Float32Array(n), e = new Float32Array(n);
     for (let i = 0; i < n; i++) { hp[i] = p[i] - lo[i]; e[i] = hp[i] * hp[i]; }
     const env = gauss1D(e, sl), out = new Float32Array(n);
     for (let i = 0; i < n; i++) out[i] = clamp(hp[i] / (Math.sqrt(env[i]) + 0.5), -3, 3);
@@ -863,11 +1093,11 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
   }
   function rmsOf(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * a[i]; return Math.sqrt(s / (a.length || 1)); }
   /* Local extrema of `s` pruned by minimum spacing (from local period) and prominence. */
-  function pickExtrema(s, per, sign) {
-    const n = s.length, r = rmsOf(s) || 1, pts = [];
+  function pickExtrema(s, per, sign, relax) {
+    const n = s.length, r = rmsOf(s) || 1, pts = [], loosen = relax || 1, floor = TUNE.floor / loosen;
     for (let i = 1; i < n - 1; i++) {
       const v = sign * s[i];
-      if (v <= sign * s[i - 1] && v < sign * s[i + 1] && v < TUNE.floor * r) pts.push(i);
+      if (v <= sign * s[i - 1] && v < sign * s[i + 1] && v < floor * r) pts.push(i);
     }
     let changed = true;
     while (changed && pts.length > 1) {
@@ -877,7 +1107,7 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
         let top = -Infinity;
         for (let i = a; i <= b; i++) top = Math.max(top, sign * s[i]);
         const shallow = Math.max(sign * s[a], sign * s[b]);
-        if (b - a < TUNE.merge * per[mid] || top - shallow < TUNE.prom * r) {
+        if (b - a < loosen * TUNE.merge * per[mid] || top - shallow < loosen * TUNE.prom * r) {
           pts.splice(sign * s[a] > sign * s[b] ? k : k + 1, 1);
           changed = true;
           break;
@@ -1081,15 +1311,20 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
   function analyze(rgba, w, h, opts) {
     opts = opts || {};
     const progress = opts.onProgress || function () {};
-    const gray = new Float32Array(w * h);
-    for (let i = 0, j = 0; i < gray.length; i++, j += 4) gray[i] = 0.3 * rgba[j] + 0.59 * rgba[j + 1] + 0.11 * rgba[j + 2];
+    const gray0 = new Float32Array(w * h);
+    // Blue carries mostly noise on wood (Norell 2011, eq. 1), rescaled to keep the 0-255 range.
+    for (let i = 0, j = 0; i < gray0.length; i++, j += 4) gray0[i] = (0.2989 * rgba[j] + 0.587 * rgba[j + 1]) / 0.8859;
 
     progress(0.05, 'Finding the wood');
     let mask = segmentWood(rgba, w, h);
 
+    progress(0.1, 'Checking for saw marks');
+    const sawed = removeSawMarks(gray0, w, h, mask), gray = sawed.gray;
+
     progress(0.15, 'Locating the pith');
     let field = orientationField(gray, w, h, mask);
     let centre, auto = true;
+    const pithEstimates = [];
     if (opts.center) { centre = { x: opts.center.x, y: opts.center.y }; auto = false; }
     else if (field.tiles.length >= 12) { const p = locatePith(field); centre = { x: p.x * field.f, y: p.y * field.f }; }
     else centre = { x: w / 2, y: h / 2 };
@@ -1101,6 +1336,10 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
       if (auto && field.tiles.length >= 12) { const p = locatePith(field); centre = { x: p.x * field.f, y: p.y * field.f }; }
     }
     if (auto && field.tiles.length >= 12) {
+      // Independent estimates: whole-image, zoomed in at coarse scale, zoomed in at fine scale. Their spread is the validity measure.
+      pithEstimates.push({ x: centre.x, y: centre.y });
+      const near = refinePith(field, { x: centre.x / field.f, y: centre.y / field.f });
+      pithEstimates.push({ x: near.x * field.f, y: near.y * field.f });
       const fine = orientationField(gray, w, h, mask, 8, 1000);
       const p = refinePith(fine, { x: centre.x / fine.f, y: centre.y / fine.f });
       if (p.x >= 0 && p.y >= 0 && p.x * fine.f < w && p.y * fine.f < h) centre = { x: p.x * fine.f, y: p.y * fine.f };
@@ -1108,7 +1347,7 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     const colourShare = woodColourShare(rgba, w, h, mask);
     const inFrame = centre.x >= 0 && centre.y >= 0 && centre.x < w && centre.y < h;
     const stats = fieldStats(field, centre.x / field.f, centre.y / field.f);
-    const diag = { colourShare, radiality: stats.radiality, parallel: stats.parallel, coherence: stats.coherence, fullFrame: mask.fullFrame };
+    const diag = { colourShare, radiality: stats.radiality, parallel: stats.parallel, coherence: stats.coherence, fullFrame: mask.fullFrame, sawProbe: sawed.probe.ratio, sawLift: sawed.probe.lift, sawMarks: sawed.saw };
     const base = { centre, autoCentre: auto, width: w, height: h, diag };
 
     if (colourShare < 0.45) return decline('not-wood', "This doesn't look like cut wood. Photograph the flat, cut face of a trunk.", base);
@@ -1131,6 +1370,7 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
       }
     }
     diag.outline = !!outline;
+    if (outline) { const fixed = repairOutline(outline, gray, w, h, mask); outline = fixed.outline; diag.outlineRepaired = fixed.repaired; }
 
     progress(0.3, 'Measuring along 48 directions');
     const N = 48, raw = [];
@@ -1140,23 +1380,40 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     }
     if (raw.length < 8) return decline('too-small', 'Too little of the trunk is visible around the centre. Move back so the whole face fits.', base);
     const maxLen = Math.max(...raw.map((r) => r.len));
-    const rays = [];
-    for (const r of raw) {
-      if (r.len < 0.35 * maxLen) continue;
+    const measure = (r) => {
       const end = outline ? r.len : barkTrim(r.mean, r.clipped);
       const start = 2;
-      if (end - start < 24) continue;
+      if (end - start < 24) return false;
       r.trimR = end;
       r.bp = bandpass(r.mean.subarray(start, end));
       const bl = bandpass(r.left.subarray(start, end)), br = bandpass(r.right.subarray(start, end));
       r.q = corr(bl, br);
       r.res = analyseProfile(r.bp);
-      rays.push(r);
-    }
+      return true;
+    };
+    let rays = [];
+    for (const r of raw) if (r.len >= 0.35 * maxLen && measure(r)) rays.push(r);
     // A real pith has wood on every side. If most directions end almost at once, this is a fragment.
     const coverage = raw.filter((r) => r.len >= 0.35 * maxLen).length / N;
     diag.coverage = coverage;
     if (rays.length < 6) return decline('too-small', 'Too little of the trunk is visible around the centre. Move back so the whole face fits.', base);
+
+    // Dirt and holes. Norell's threshold is 40 on a 0-255 scale; the relative cap protects naturally dark wood.
+    const woodLevel = median(rays.flatMap((r) => Array.from(r.mean.subarray(Math.floor(r.len * 0.2), Math.floor(r.len * 0.85)))));
+    const darkAt = Math.min(40, 0.45 * woodLevel);
+    const ringPx = median(rays.map((r) => r.bp.length / Math.max(1, r.res.a)));
+    const defectRun = Math.max(6, Math.round(1.5 * ringPx));
+    const dirty = new Set();
+    for (const r of rays) {
+      const runs = darkRuns(r.mean, darkAt, defectRun);
+      if (!runs.length) continue;
+      const last = runs[runs.length - 1];
+      if (last[1] >= r.len * 0.95) { dirty.add(r); continue; } // dark all the way out: this direction shows no rings past that point
+      for (const a of [r.mean, r.left, r.right]) bridgeRuns(a, runs);
+      measure(r);
+    }
+    if (dirty.size && rays.length - dirty.size >= 6) rays = rays.filter((r) => !dirty.has(r));
+    diag.dirtyRays = dirty.size;
 
     progress(0.55, 'Comparing ring-counting methods');
     const qMed = median(rays.map((r) => r.q));
@@ -1178,6 +1435,7 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     if (outline && sRes.minima.length >= 2) {
       progress(0.76, 'Following each ring around the trunk');
       P = ringPolar(gray, w, h, centre, outline);
+      diag.bridged = bridgePolar(P, darkAt, defectRun);
       const radius = median(Array.from(outline.radii));
       let spacing = Math.max(4, radius / Math.max(sRes.minima.length, 1));
       line = darkLines(P, spacing);
@@ -1196,6 +1454,28 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     }
 
     const mA = median(use.map((r) => r.res.a)), mB = median(use.map((r) => r.res.b)), mC = median(use.map((r) => r.res.c));
+    // Norell's rule: drop the highest and lowest of four counts. Many rings get merged rather than invented, so
+    // above 20 the higher survivor is nearer the truth; below 20 noise adds rings, so the aligned count stands.
+    const four = [sRes.a, mA, mB, mC].sort((a, b) => a - b), midMean = (four[1] + four[2]) / 2;
+    diag.trimmedCount = midMean;
+    if (traced && midMean >= 20 && four[2] > sRes.a) {
+      const target = Math.round(four[2]), st = straighten(P, traced, outline), res2 = analyseProfile(bandpass(st.stack));
+      let bestPts = null;
+      for (const relax of [0.8, 0.65, 0.5, 0.4, 0.3, 0.22]) {
+        const pts = pickExtrema(res2.s, res2.per, 1, relax), count = ringCount(pts, res2.per.length, res2.per);
+        if (count > target + Math.max(1, 0.04 * target)) break;
+        if (count > sRes.a) bestPts = pts;
+        if (count >= target) break;
+      }
+      if (bestPts) {
+        const seeds = bestPts.map((x) => Float32Array.from({ length: P.nT }, (_, t) => st.toPhoto(x, t)));
+        for (let i = 1; i < seeds.length; i++) for (let t = 0; t < P.nT; t++) if (seeds[i][t] < seeds[i - 1][t] + 1) seeds[i][t] = seeds[i - 1][t] + 1;
+        const spacing = Math.max(4, median(Array.from(outline.radii)) / bestPts.length);
+        line = darkLines(P, spacing);
+        traced = traceRings(P, line, outline, seeds, spacing * 0.8);
+        sRes = Object.assign({}, res2, { minima: bestPts, a: ringCount(bestPts, res2.per.length, res2.per) });
+      }
+    }
     const methods = { stacked: sRes.a, darkBands: mA, edges: mB, spacing: Math.round(mC) };
     // Edge counts split textured wood on real photos, so they only widen the range when they roughly agree.
     const counts = [sRes.a, mA, mC];
@@ -1229,7 +1509,12 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
     const qualScore = clamp((qTop - 0.15) / 0.5, 0, 1);
     const radScore = clamp((stats.radiality - 0.2) / 0.5, 0, 1);
     const resScore = clamp((pxPerRing - 3) / 6, 0, 1);
-    const confidence = 0.45 * spreadScore + 0.25 * qualScore + 0.15 * radScore + 0.15 * resScore;
+    // Norell's validity v: how far the chosen pith lies from the other estimates, here relative to the trunk size.
+    const trunkR = outline ? median(Array.from(outline.radii)) : maxLen;
+    const pithValidity = pithEstimates.length ? pithEstimates.reduce((s, p) => s + Math.hypot(p.x - centre.x, p.y - centre.y), 0) : null;
+    diag.pithValidity = pithValidity;
+    const pithShaky = pithValidity != null && pithValidity > TUNE.pithSpread * trunkR;
+    const confidence = (0.45 * spreadScore + 0.25 * qualScore + 0.15 * radScore + 0.15 * resScore) * (pithShaky ? 0.75 : 1);
 
     const outerPer = median(Array.from(sRes.per.subarray(Math.floor(sRes.per.length * 0.66))));
     diag.outerPer = outerPer;
@@ -1240,19 +1525,33 @@ footer.fine { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--l
       levelOut = outerPer < 5 ? 'low' : levelOut === 'high' ? 'medium' : levelOut;
     }
     const warnings = [];
+    // The aligned count sitting well under the other counts is the signature of merged rings, whatever the spacing looks like.
+    const merged = four[2] > 1.08 * age && age >= 20;
+    if (merged) { highOut = Math.max(highOut, Math.round(four[3])); levelOut = 'low'; }
+    // Defects hide rings even after bridging, so a face with many of them cannot earn top confidence.
+    const defectShare = (diag.bridged || 0) / (outline ? Array.from(outline.radii).reduce((s, v) => s + v, 0) : Infinity);
+    diag.defectShare = defectShare;
+    const defective = defectShare > TUNE.defectShare;
+    if (defective) { if (levelOut === 'high') levelOut = 'medium'; warnings.push('Cracks, holes or dirt cover part of this face and were bridged over, so some rings may be missed.'); }
+    // Far more sharp edges than counted rings: faint rings, often in pale sapwood, are probably going uncounted.
+    const faint = mB > 1.15 * age && age >= 20;
+    if (faint) { if (levelOut === 'high') levelOut = 'medium'; highOut = Math.max(highOut, Math.round(mB)); warnings.push('Some rings look faint, often in the pale outer wood, so the real age may be higher. Wetting or sanding the face can bring them out.'); }
     const partial = coverage < 0.7;
     if (partial) {
       levelOut = 'low';
       warnings.push('The centre of the tree does not seem to be surrounded by wood here, so this may be a fragment. Treat the number as a rough minimum and check the traced rings.');
     }
-    if (tooFine) warnings.push('The outer rings are only a few pixels wide, so some may be merged and the real age may be higher. A closer photo of the outer edge will help.');
+    if (tooFine || merged) warnings.push('The outer rings are only a few pixels wide, so some may be merged and the real age may be higher. A closer photo of the outer edge will help.');
     if (clippedShare > 0.5) warnings.push('The outer edge is out of frame, so the tree may be older than this.');
     if (!auto) warnings.push('Using the centre you set by hand.');
+    if (pithShaky) warnings.push('The centre was hard to pin down. If the cross is not on the smallest ring, move it and run again.');
+    if (sawed.saw) warnings.push('Saw marks were filtered out before counting. A freshly sanded face will give a more reliable count.');
+    if (dirty.size) warnings.push(`${dirty.size} of ${N} directions were skipped because dirt or shadow hid the outer rings.`);
     if (years.length && years.filter((y) => !y.reliable).length > years.length * 0.4) warnings.push('Many years could not be measured reliably, so they appear as gaps.');
 
     progress(1, 'Done');
     return Object.assign(base, {
-      ok: true, age, low, high: highOut, confidence, level: levelOut, atLeast: tooFine || partial || clippedShare > 0.5, partial,
+      ok: true, age, low, high: highOut, confidence, level: levelOut, atLeast: tooFine || merged || partial || clippedShare > 0.5, partial,
       methods, years, warnings, clipped: clippedShare > 0.5,
       overlay, trunk: outline ? { nT: outline.nT, radii: Array.from(outline.radii) } : null,
     });
